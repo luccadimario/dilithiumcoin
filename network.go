@@ -9,24 +9,39 @@ import (
 	"time"
 )
 
+// ============================================================================
+// MESSAGE
+// ============================================================================
+
 // Message represents data sent between nodes
 type Message struct {
-	Type      string      `json:"type"`      // "block" or "chain"
-	Data      interface{} `json:"data"`      // Block or Blockchain
+	Type      string      `json:"type"`      // "block", "transaction", or "chain"
+	Data      interface{} `json:"data"`
 	Timestamp int64       `json:"timestamp"`
 }
 
-// Node represents a peer in the network
+// ============================================================================
+// NODE
+// ============================================================================
+
+// Node represents a peer in the P2P network
 type Node struct {
-	Address    string
-	Blockchain *Blockchain
-	Peers      map[string]net.Conn
-	PeersMutex sync.RWMutex
-	Port       string
-	MessageCh  chan Message
+	Address      string
+	Blockchain   *Blockchain
+	Peers        map[string]net.Conn
+	PeersMutex   sync.RWMutex
+	Port         string
+	MessageCh    chan Message
+
+	// Mining state
+	MinerAddress   string
+	miningCancel   chan struct{}
+	miningMutex    sync.Mutex
+	isMining       bool
+	autoMineEnabled bool
 }
 
-// NewNode creates a new node
+// NewNode creates a new node with the given port and difficulty
 func NewNode(port string, difficulty int) *Node {
 	return &Node{
 		Address:    fmt.Sprintf("localhost:%s", port),
@@ -37,33 +52,37 @@ func NewNode(port string, difficulty int) *Node {
 	}
 }
 
-// StartServer starts listening for incoming connections
+// ============================================================================
+// SERVER
+// ============================================================================
+
+// StartServer starts listening for incoming peer connections
 func (n *Node) StartServer() {
-	listener, err := net.Listen("tcp", ":"+n.Port)
+	listener, err := net.Listen("tcp", "0.0.0.0:"+n.Port)
 	if err != nil {
 		fmt.Printf("Failed to start server on port %s: %v\n", n.Port, err)
 		return
 	}
 
-	fmt.Printf("Node listening on %s\n", n.Address)
+	fmt.Printf("Node listening on 0.0.0.0:%s\n", n.Port)
 
-	// Accept incoming connections in a goroutine
-	go func() {
-		defer listener.Close()
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				// Only print error if it's not a closed connection
-				if err.Error() != "use of closed network connection" {
-					fmt.Printf("Error accepting connection: %v\n", err)
-				}
-				return
+	go n.acceptConnections(listener)
+}
+
+// acceptConnections accepts incoming peer connections
+func (n *Node) acceptConnections(listener net.Listener) {
+	defer listener.Close()
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if err.Error() != "use of closed network connection" {
+				fmt.Printf("Error accepting connection: %v\n", err)
 			}
-
-			// Handle each peer connection in a separate goroutine
-			go n.handlePeerConnection(conn)
+			return
 		}
-	}()
+
+		go n.handlePeerConnection(conn)
+	}
 }
 
 // handlePeerConnection handles incoming messages from a peer
@@ -73,20 +92,19 @@ func (n *Node) handlePeerConnection(conn net.Conn) {
 	peerAddr := conn.RemoteAddr().String()
 	fmt.Printf("New peer connected: %s\n", peerAddr)
 
-	// Store the connection
+	// Store connection
 	n.PeersMutex.Lock()
 	n.Peers[peerAddr] = conn
 	n.PeersMutex.Unlock()
 
-	// Send our current blockchain to the new peer
+	// Send our blockchain to the new peer
 	n.sendBlockchain(conn)
 
 	// Read messages from this peer
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		var msg Message
-		err := json.Unmarshal(scanner.Bytes(), &msg)
-		if err != nil {
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			fmt.Printf("Error parsing message: %v\n", err)
 			continue
 		}
@@ -101,6 +119,10 @@ func (n *Node) handlePeerConnection(conn net.Conn) {
 	fmt.Printf("Peer disconnected: %s\n", peerAddr)
 }
 
+// ============================================================================
+// CLIENT
+// ============================================================================
+
 // ConnectToPeer connects to another node
 func (n *Node) ConnectToPeer(peerAddress string) error {
 	conn, err := net.Dial("tcp", peerAddress)
@@ -111,7 +133,7 @@ func (n *Node) ConnectToPeer(peerAddress string) error {
 
 	fmt.Printf("Connected to peer: %s\n", peerAddress)
 
-	// Store the connection
+	// Store connection
 	n.PeersMutex.Lock()
 	n.Peers[peerAddress] = conn
 	n.PeersMutex.Unlock()
@@ -120,93 +142,185 @@ func (n *Node) ConnectToPeer(peerAddress string) error {
 	n.sendBlockchain(conn)
 
 	// Read messages from this peer in a goroutine
-	go func() {
-		defer conn.Close()
-		scanner := bufio.NewScanner(conn)
-		for scanner.Scan() {
-			var msg Message
-			err := json.Unmarshal(scanner.Bytes(), &msg)
-			if err != nil {
-				fmt.Printf("Error parsing message: %v\n", err)
-				continue
-			}
-
-			n.handleMessage(msg, peerAddress)
-		}
-	}()
+	go n.readPeerMessages(conn, peerAddress)
 
 	return nil
 }
 
-// handleMessage processes incoming messages
+// readPeerMessages reads messages from a peer connection
+func (n *Node) readPeerMessages(conn net.Conn, peerAddress string) {
+	defer conn.Close()
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		var msg Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			fmt.Printf("Error parsing message: %v\n", err)
+			continue
+		}
+
+		n.handleMessage(msg, peerAddress)
+	}
+}
+
+// ============================================================================
+// MESSAGE HANDLING
+// ============================================================================
+
+// handleMessage processes incoming messages based on type
 func (n *Node) handleMessage(msg Message, peerAddr string) {
 	switch msg.Type {
+	case "transaction":
+		n.handleTransactionMessage(msg, peerAddr)
 	case "block":
-		// Peer sent us a new block
-		var block Block
-		blockJSON, _ := json.Marshal(msg.Data)
-		json.Unmarshal(blockJSON, &block)
-		
-		fmt.Printf("Received block from %s\n", peerAddr)
-		
-		// Add to our blockchain if valid
-		if len(n.Blockchain.Blocks) > 0 {
-			lastBlock := n.Blockchain.Blocks[len(n.Blockchain.Blocks)-1]
-			if block.PreviousHash == lastBlock.Hash {
-				n.Blockchain.Blocks = append(n.Blockchain.Blocks, &block)
-				fmt.Printf("Block added to chain\n")
-				
-				// Broadcast to other peers
-				n.broadcastBlock(&block)
-			}
-		}
-
+		n.handleBlockMessage(msg, peerAddr)
 	case "chain":
-		// Peer sent us their entire blockchain
-		var chain []*Block
-		chainJSON, _ := json.Marshal(msg.Data)
-		json.Unmarshal(chainJSON, &chain)
-		
-		// If their chain is longer and valid, replace ours
-		if len(chain) > len(n.Blockchain.Blocks) && n.isValidChain(chain) {
-			fmt.Printf("Syncing blockchain from %s (length: %d)\n", peerAddr, len(chain))
-			n.Blockchain.Blocks = chain
-		} else if len(chain) == len(n.Blockchain.Blocks) && len(chain) == 1 {
-			// If both have just genesis block, sync the genesis block hash
-			if chain[0].Hash != n.Blockchain.Blocks[0].Hash {
-				fmt.Printf("Syncing genesis block from %s\n", peerAddr)
-				n.Blockchain.Blocks[0] = chain[0]
-			}
-		}
+		n.handleChainMessage(msg, peerAddr)
 	}
 }
 
-// isValidChain validates a blockchain
-func (n *Node) isValidChain(chain []*Block) bool {
-	for i := 1; i < len(chain); i++ {
-		currentBlock := chain[i]
-		previousBlock := chain[i-1]
-
-		if currentBlock.Hash != currentBlock.CalculateHash() {
-			return false
-		}
-
-		if currentBlock.PreviousHash != previousBlock.Hash {
-			return false
-		}
-
-		target := ""
-		for j := 0; j < n.Blockchain.Difficulty; j++ {
-			target += "0"
-		}
-		if currentBlock.Hash[:n.Blockchain.Difficulty] != target {
-			return false
-		}
+// handleTransactionMessage processes a transaction from a peer
+func (n *Node) handleTransactionMessage(msg Message, peerAddr string) {
+	var tx Transaction
+	txJSON, _ := json.Marshal(msg.Data)
+	if err := json.Unmarshal(txJSON, &tx); err != nil {
+		fmt.Printf("Error parsing transaction: %v\n", err)
+		return
 	}
-	return true
+
+	// Add to mempool - returns true if this is a new transaction
+	added, err := n.Blockchain.AddTransactionIfNew(&tx)
+	if err != nil {
+		fmt.Printf("Failed to add transaction to mempool: %v\n", err)
+		return
+	}
+
+	// Only broadcast if this was a NEW transaction (prevents infinite loops)
+	if added {
+		fmt.Printf("Received new transaction from %s\n", peerAddr)
+		n.broadcastTransaction(&tx)
+	}
 }
 
-// sendBlockchain sends the entire blockchain to a peer
+// handleBlockMessage processes a block from a peer
+func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
+	var block Block
+	blockJSON, _ := json.Marshal(msg.Data)
+	if err := json.Unmarshal(blockJSON, &block); err != nil {
+		fmt.Printf("Error parsing block: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Received block #%d from %s\n", block.Index, peerAddr)
+
+	n.Blockchain.mutex.Lock()
+
+	if len(n.Blockchain.Blocks) == 0 {
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	lastBlock := n.Blockchain.Blocks[len(n.Blockchain.Blocks)-1]
+
+	// Check if block connects to our chain
+	if block.PreviousHash != lastBlock.Hash {
+		// Could be a block for a future position or different chain
+		if block.Index <= lastBlock.Index {
+			fmt.Printf("Ignoring block #%d - we already have this height\n", block.Index)
+		} else {
+			fmt.Printf("Block #%d doesn't connect - requesting full chain sync\n", block.Index)
+		}
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Verify proof of work
+	target := createTarget(n.Blockchain.Difficulty)
+	if len(block.Hash) < n.Blockchain.Difficulty || block.Hash[:n.Blockchain.Difficulty] != target {
+		fmt.Printf("Block #%d has invalid proof of work\n", block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Verify hash is correct
+	if block.Hash != block.CalculateHash() {
+		fmt.Printf("Block #%d has invalid hash\n", block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Cancel our current mining - someone else won this round
+	n.cancelMining()
+
+	// Add block to chain
+	n.Blockchain.Blocks = append(n.Blockchain.Blocks, &block)
+
+	// Remove mined transactions from our mempool
+	n.Blockchain.clearMinedTransactions(block.Transactions)
+
+	n.Blockchain.mutex.Unlock()
+
+	fmt.Printf("Block #%d added to chain (from peer)\n", block.Index)
+
+	// Restart mining if auto-mining is enabled and there are pending transactions
+	if n.autoMineEnabled && n.Blockchain.GetPendingCount() > 0 {
+		go n.startMiningRound()
+	}
+}
+
+// handleChainMessage processes a blockchain from a peer
+func (n *Node) handleChainMessage(msg Message, peerAddr string) {
+	var chain []*Block
+	chainJSON, _ := json.Marshal(msg.Data)
+	if err := json.Unmarshal(chainJSON, &chain); err != nil {
+		fmt.Printf("Error parsing chain: %v\n", err)
+		return
+	}
+
+	n.Blockchain.mutex.Lock()
+	defer n.Blockchain.mutex.Unlock()
+
+	// If their chain is longer and valid, replace ours entirely
+	if len(chain) > len(n.Blockchain.Blocks) && n.isValidChain(chain) {
+		fmt.Printf("Syncing blockchain from %s (length: %d -> %d)\n", peerAddr, len(n.Blockchain.Blocks), len(chain))
+
+		// Cancel current mining - chain is being replaced
+		n.cancelMining()
+
+		n.Blockchain.Blocks = chain
+
+		// Clear mempool - transactions may have been included in the new chain
+		n.Blockchain.clearMempool()
+	}
+	// If chains are same length, keep our own (first miner to extend wins)
+}
+
+// ============================================================================
+// BROADCASTING
+// ============================================================================
+
+// broadcastTransaction sends a transaction to all connected peers
+func (n *Node) broadcastTransaction(tx *Transaction) {
+	msg := Message{
+		Type:      "transaction",
+		Data:      tx,
+		Timestamp: time.Now().Unix(),
+	}
+
+	n.broadcastMessage(msg)
+}
+
+// broadcastBlock sends a block to all connected peers
+func (n *Node) broadcastBlock(block *Block) {
+	msg := Message{
+		Type:      "block",
+		Data:      block,
+		Timestamp: time.Now().Unix(),
+	}
+
+	n.broadcastMessage(msg)
+}
+
+// sendBlockchain sends the entire blockchain to a specific peer
 func (n *Node) sendBlockchain(conn net.Conn) {
 	msg := Message{
 		Type:      "chain",
@@ -218,14 +332,8 @@ func (n *Node) sendBlockchain(conn net.Conn) {
 	fmt.Fprintf(conn, "%s\n", string(data))
 }
 
-// broadcastBlock sends a block to all peers
-func (n *Node) broadcastBlock(block *Block) {
-	msg := Message{
-		Type:      "block",
-		Data:      block,
-		Timestamp: time.Now().Unix(),
-	}
-
+// broadcastMessage sends a message to all connected peers
+func (n *Node) broadcastMessage(msg Message) {
 	data, _ := json.Marshal(msg)
 
 	n.PeersMutex.RLock()
@@ -234,26 +342,163 @@ func (n *Node) broadcastBlock(block *Block) {
 	for addr, conn := range n.Peers {
 		_, err := fmt.Fprintf(conn, "%s\n", string(data))
 		if err != nil {
-			fmt.Printf("Failed to send block to %s: %v\n", addr, err)
+			fmt.Printf("Failed to send message to %s: %v\n", addr, err)
 		}
 	}
 }
 
-// MinePendingTransactions mines pending transactions and broadcasts
+// ============================================================================
+// MINING
+// ============================================================================
+
+// MinePendingTransactions mines pending transactions and broadcasts the block
 func (n *Node) MinePendingTransactions(minerAddress string) {
 	block := n.Blockchain.MinePendingTransactions(minerAddress)
-	n.broadcastBlock(block)
+	if block != nil {
+		n.broadcastBlock(block)
+	}
 }
 
-// PrintStatus prints the node's blockchain
+// StartAutoMining starts the automatic mining loop
+func (n *Node) StartAutoMining(minerAddress string) {
+	n.miningMutex.Lock()
+	if n.autoMineEnabled {
+		n.miningMutex.Unlock()
+		return
+	}
+	n.MinerAddress = minerAddress
+	n.autoMineEnabled = true
+	n.miningMutex.Unlock()
+
+	fmt.Printf("Auto-mining enabled for address: %s\n", minerAddress)
+	go n.autoMiningLoop()
+}
+
+// StopAutoMining stops the automatic mining loop
+func (n *Node) StopAutoMining() {
+	n.miningMutex.Lock()
+	n.autoMineEnabled = false
+	n.miningMutex.Unlock()
+	n.cancelMining()
+	fmt.Println("Auto-mining disabled")
+}
+
+// autoMiningLoop continuously mines when there are pending transactions
+func (n *Node) autoMiningLoop() {
+	for {
+		n.miningMutex.Lock()
+		if !n.autoMineEnabled {
+			n.miningMutex.Unlock()
+			return
+		}
+		n.miningMutex.Unlock()
+
+		// Check if there are pending transactions
+		if n.Blockchain.GetPendingCount() > 0 {
+			n.startMiningRound()
+		}
+
+		// Small delay before checking again
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// startMiningRound starts a single mining attempt
+func (n *Node) startMiningRound() {
+	n.miningMutex.Lock()
+
+	// Don't start if already mining or auto-mine disabled
+	if n.isMining || !n.autoMineEnabled {
+		n.miningMutex.Unlock()
+		return
+	}
+
+	if n.MinerAddress == "" {
+		n.miningMutex.Unlock()
+		return
+	}
+
+	n.isMining = true
+	n.miningCancel = make(chan struct{})
+	cancel := n.miningCancel
+
+	n.miningMutex.Unlock()
+
+	// Mine (this blocks until complete or cancelled)
+	block, success := n.Blockchain.MinePendingTransactionsWithCancel(n.MinerAddress, cancel)
+
+	n.miningMutex.Lock()
+	n.isMining = false
+	n.miningMutex.Unlock()
+
+	if success && block != nil {
+		fmt.Printf("Successfully mined block #%d!\n", block.Index)
+		n.broadcastBlock(block)
+	}
+}
+
+// cancelMining cancels any in-progress mining
+func (n *Node) cancelMining() {
+	n.miningMutex.Lock()
+	defer n.miningMutex.Unlock()
+
+	if n.isMining && n.miningCancel != nil {
+		close(n.miningCancel)
+		n.miningCancel = nil
+	}
+}
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+// isValidChain validates an entire blockchain
+func (n *Node) isValidChain(chain []*Block) bool {
+	for i := 1; i < len(chain); i++ {
+		if !n.isBlockValid(chain[i], chain[i-1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isBlockValid validates a single block against its predecessor
+func (n *Node) isBlockValid(currentBlock, previousBlock *Block) bool {
+	// Verify current block's hash
+	if currentBlock.Hash != currentBlock.CalculateHash() {
+		return false
+	}
+
+	// Verify previous hash matches
+	if currentBlock.PreviousHash != previousBlock.Hash {
+		return false
+	}
+
+	// Verify proof of work
+	target := createTarget(n.Blockchain.Difficulty)
+	if currentBlock.Hash[:n.Blockchain.Difficulty] != target {
+		return false
+	}
+
+	return true
+}
+
+// ============================================================================
+// STATUS
+// ============================================================================
+
+// PrintStatus prints the node's status and blockchain info
 func (n *Node) PrintStatus() {
 	fmt.Printf("\n========== NODE %s ==========\n", n.Address)
 	fmt.Printf("Peers connected: %d\n", len(n.Peers))
 	fmt.Printf("Blockchain length: %d\n", len(n.Blockchain.Blocks))
 	fmt.Println("\nBlocks:")
 	for _, block := range n.Blockchain.Blocks {
-		fmt.Printf("  Block #%d: %s\n", block.Index, block.Hash[:16]+"...")
+		hashDisplay := block.Hash
+		if len(block.Hash) > 16 {
+			hashDisplay = block.Hash[:16] + "..."
+		}
+		fmt.Printf("  Block #%d: %s\n", block.Index, hashDisplay)
 	}
 	fmt.Println("================================\n")
 }
-

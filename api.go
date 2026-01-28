@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-// APIResponse is the standard response format
+// APIResponse is the standard response format for all API endpoints
 type APIResponse struct {
 	Success bool        `json:"success"`
 	Message string      `json:"message"`
@@ -15,28 +15,140 @@ type APIResponse struct {
 
 // StartAPI starts the HTTP server for the node
 func (n *Node) StartAPI(apiPort string) {
-	// Create a new mux for this node (instead of using the default one)
 	mux := http.NewServeMux()
 
-	// Routes
-	mux.HandleFunc("/chain", n.handleGetChain)
-	mux.HandleFunc("/mine", n.handleMine)
-	mux.HandleFunc("/status", n.handleStatus)
-	mux.HandleFunc("/peers", n.handleGetPeers)
-	mux.HandleFunc("/add-peer", n.handleAddPeer)
+	// Register all routes
+	n.registerRoutes(mux)
 
-	apiAddr := ":" + apiPort
-	fmt.Printf("API listening on http://localhost:%s\n", apiPort)
-	fmt.Printf("   GET  http://localhost:%s/chain\n", apiPort)
-	fmt.Printf("   POST http://localhost:%s/mine?data=<message>\n", apiPort)
-	fmt.Printf("   GET  http://localhost:%s/status\n", apiPort)
-	fmt.Printf("   GET  http://localhost:%s/peers\n", apiPort)
-	fmt.Printf("   POST http://localhost:%s/add-peer?address=<address>\n\n", apiPort)
+	apiAddr := "0.0.0.0:" + apiPort
+	n.printAPIInfo(apiPort)
 
 	if err := http.ListenAndServe(apiAddr, mux); err != nil {
 		fmt.Printf("API error: %v\n", err)
 	}
 }
+
+// registerRoutes registers all API endpoints
+func (n *Node) registerRoutes(mux *http.ServeMux) {
+	// Blockchain endpoints
+	mux.HandleFunc("/chain", n.handleGetChain)
+	mux.HandleFunc("/mine", n.handleMine)
+	mux.HandleFunc("/status", n.handleStatus)
+
+	// Peer endpoints
+	mux.HandleFunc("/peers", n.handleGetPeers)
+	mux.HandleFunc("/add-peer", n.handleAddPeer)
+
+	// Transaction endpoints
+	mux.HandleFunc("/transaction", n.handleAddTransaction)
+	mux.HandleFunc("/mempool", n.handleGetMempool)
+
+}
+
+// printAPIInfo prints API endpoint information
+func (n *Node) printAPIInfo(apiPort string) {
+	fmt.Printf("API listening on 0.0.0.0:%s\n", apiPort)
+	fmt.Println("Endpoints:")
+	fmt.Printf("  POST http://YOUR_IP:%s/transaction          - Submit signed transaction\n", apiPort)
+	fmt.Printf("  GET  http://YOUR_IP:%s/mempool              - View pending transactions\n", apiPort)
+	fmt.Printf("  POST http://YOUR_IP:%s/mine?data=X&miner=Y  - Mine a block\n", apiPort)
+	fmt.Printf("  GET  http://YOUR_IP:%s/chain                - View blockchain\n", apiPort)
+	fmt.Printf("  GET  http://YOUR_IP:%s/status               - Node status\n", apiPort)
+	fmt.Printf("  GET  http://YOUR_IP:%s/peers                - Connected peers\n", apiPort)
+	fmt.Printf("  POST http://YOUR_IP:%s/add-peer?address=X   - Connect to peer\n\n", apiPort)
+}
+
+// ============================================================================
+// TRANSACTION ENDPOINTS
+// ============================================================================
+
+// handleAddTransaction receives and adds signed transactions to mempool
+func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Only POST allowed")
+		return
+	}
+
+	var req struct {
+		From      string  `json:"from"`
+		To        string  `json:"to"`
+		Amount    float64 `json:"amount"`
+		Timestamp int64   `json:"timestamp"`
+		Signature string  `json:"signature"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	tx := &Transaction{
+		From:      req.From,
+		To:        req.To,
+		Amount:    req.Amount,
+		Timestamp: req.Timestamp,
+		Signature: req.Signature,
+	}
+
+	// Validate transaction
+	if err := validateTransaction(tx); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Add to mempool
+	if err := n.Blockchain.AddTransaction(tx); err != nil {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to add transaction: %v", err))
+		return
+	}
+
+	// Broadcast to peers
+	n.broadcastTransaction(tx)
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Transaction added to mempool",
+		Data: map[string]interface{}{
+			"from":      tx.From,
+			"to":        tx.To,
+			"amount":    tx.Amount,
+			"timestamp": tx.Timestamp,
+			"signature": truncateString(tx.Signature, 32),
+		},
+	})
+}
+
+// handleGetMempool returns all pending transactions in the mempool
+func (n *Node) handleGetMempool(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
+		return
+	}
+
+	txDisplay := make([]map[string]interface{}, 0, len(n.Blockchain.PendingTransactions))
+	for _, tx := range n.Blockchain.PendingTransactions {
+		txDisplay = append(txDisplay, map[string]interface{}{
+			"from":      tx.From,
+			"to":        tx.To,
+			"amount":    tx.Amount,
+			"timestamp": tx.Timestamp,
+			"signature": truncateString(tx.Signature, 32),
+		})
+	}
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Mempool retrieved",
+		Data: map[string]interface{}{
+			"count":        len(n.Blockchain.PendingTransactions),
+			"transactions": txDisplay,
+		},
+	})
+}
+
+// ============================================================================
+// BLOCKCHAIN ENDPOINTS
+// ============================================================================
 
 // handleGetChain returns the entire blockchain
 func (n *Node) handleGetChain(w http.ResponseWriter, r *http.Request) {
@@ -45,31 +157,20 @@ func (n *Node) handleGetChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n.Blockchain.Blocks = n.Blockchain.Blocks // Make sure we have latest
-
-	response := APIResponse{
+	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Blockchain retrieved",
 		Data: map[string]interface{}{
 			"length": len(n.Blockchain.Blocks),
 			"blocks": n.Blockchain.Blocks,
 		},
-	}
-
-	respondJSON(w, http.StatusOK, response)
+	})
 }
 
-// handleMine mines a new block
+// handleMine mines a new block with pending transactions
 func (n *Node) handleMine(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, http.StatusMethodNotAllowed, "Only POST allowed")
-		return
-	}
-
-	// Get data from query parameter
-	data := r.URL.Query().Get("data")
-	if data == "" {
-		respondError(w, http.StatusBadRequest, "Missing 'data' query parameter")
 		return
 	}
 
@@ -78,20 +179,15 @@ func (n *Node) handleMine(w http.ResponseWriter, r *http.Request) {
 		minerAddress = "anonymous"
 	}
 
-	fmt.Printf("Mining block with data: %s\n", data)
+	fmt.Printf("Mining block for miner: %s\n", minerAddress)
 
-	// Create a transaction from the data
-	tx := NewTransaction("API", minerAddress, 0)
-	tx.Signature = data // Store the data in signature field for now
-	n.Blockchain.AddTransaction(tx)
-
-	// Mine the block
+	// Mine the block with pending transactions from mempool
 	newBlock := n.Blockchain.MinePendingTransactions(minerAddress)
 
 	// Broadcast to peers
 	n.broadcastBlock(newBlock)
 
-	response := APIResponse{
+	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Block mined and broadcast",
 		Data: map[string]interface{}{
@@ -99,12 +195,10 @@ func (n *Node) handleMine(w http.ResponseWriter, r *http.Request) {
 			"hash":         newBlock.Hash,
 			"transactions": len(newBlock.Transactions),
 		},
-	}
-
-	respondJSON(w, http.StatusOK, response)
+	})
 }
 
-// handleStatus returns node status
+// handleStatus returns the current node status
 func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
@@ -115,22 +209,25 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 	peersCount := len(n.Peers)
 	n.PeersMutex.RUnlock()
 
-	response := APIResponse{
+	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Node status",
 		Data: map[string]interface{}{
-			"address":           n.Address,
-			"blockchain_length": len(n.Blockchain.Blocks),
-			"peers_connected":   peersCount,
-			"difficulty":        n.Blockchain.Difficulty,
-			"is_valid":          n.Blockchain.IsValid(),
+			"address":            n.Address,
+			"blockchain_length":  len(n.Blockchain.Blocks),
+			"pending_transactions": len(n.Blockchain.PendingTransactions),
+			"peers_connected":    peersCount,
+			"difficulty":         n.Blockchain.Difficulty,
+			"is_valid":           n.Blockchain.IsValid(),
 		},
-	}
-
-	respondJSON(w, http.StatusOK, response)
+	})
 }
 
-// handleGetPeers returns connected peers
+// ============================================================================
+// PEER ENDPOINTS
+// ============================================================================
+
+// handleGetPeers returns list of connected peers
 func (n *Node) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
@@ -144,16 +241,14 @@ func (n *Node) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 	}
 	n.PeersMutex.RUnlock()
 
-	response := APIResponse{
+	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Connected peers",
 		Data: map[string]interface{}{
 			"count": len(peers),
 			"peers": peers,
 		},
-	}
-
-	respondJSON(w, http.StatusOK, response)
+	})
 }
 
 // handleAddPeer connects to a new peer
@@ -169,24 +264,34 @@ func (n *Node) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := n.ConnectToPeer(address)
-	if err != nil {
+	if err := n.ConnectToPeer(address); err != nil {
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to connect: %v", err))
 		return
 	}
 
-	response := APIResponse{
+	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: fmt.Sprintf("Connected to peer %s", address),
 		Data: map[string]interface{}{
 			"peer": address,
 		},
-	}
-
-	respondJSON(w, http.StatusOK, response)
+	})
 }
 
-// respondJSON sends a JSON response
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+
+// truncateString safely truncates a string and adds ellipsis
+func truncateString(s string, maxLen int) string {
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
+// respondJSON sends a JSON response with proper headers
 func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -195,10 +300,8 @@ func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 
 // respondError sends an error response
 func respondError(w http.ResponseWriter, statusCode int, message string) {
-	response := APIResponse{
+	respondJSON(w, statusCode, APIResponse{
 		Success: false,
 		Message: message,
-	}
-	respondJSON(w, statusCode, response)
+	})
 }
-

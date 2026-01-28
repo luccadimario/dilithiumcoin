@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# Rebellion Build Script
+# Builds binaries for multiple platforms
+
+VERSION="1.0.0"
+PROJECT_NAME="rebellion"
+
+# Create dist directory
+mkdir -p dist
+
+echo "Building Rebellion v${VERSION}..."
+echo ""
+
+# Define platforms
+platforms=(
+    "linux/amd64"
+    "linux/arm64"
+    "darwin/amd64"
+    "darwin/arm64"
+    "windows/amd64"
+)
+
+# ============================================================================
+# BUILD NODE
+# ============================================================================
+echo "Building Node..."
+for platform in "${platforms[@]}"
+do
+    IFS='/' read -r GOOS GOARCH <<< "$platform"
+    
+    output_name="rebellion-${GOOS}-${GOARCH}"
+    
+    if [ "$GOOS" = "windows" ]; then
+        output_name="${output_name}.exe"
+    fi
+    
+    echo "  Building for $GOOS/$GOARCH..."
+    
+    env GOOS=$GOOS GOARCH=$GOARCH go build \
+        -ldflags "-X main.AppVersion=${VERSION}" \
+        -o dist/$output_name \
+        .
+    
+    if [ $? -ne 0 ]; then
+        echo "Error building for $platform"
+        exit 1
+    fi
+done
+
+echo "Node build complete!"
+echo ""
+
+# ============================================================================
+# BUILD CLI
+# ============================================================================
+echo "Building CLI Tool..."
+for platform in "${platforms[@]}"
+do
+    IFS='/' read -r GOOS GOARCH <<< "$platform"
+    
+    output_name="rebellion-cli-${GOOS}-${GOARCH}"
+    
+    if [ "$GOOS" = "windows" ]; then
+        output_name="${output_name}.exe"
+    fi
+    
+    echo "  Building for $GOOS/$GOARCH..."
+    
+    env GOOS=$GOOS GOARCH=$GOARCH go build \
+        -ldflags "-X main.AppVersion=${VERSION}" \
+        -o dist/$output_name \
+        ./cmd/rebellion-cli
+    
+    if [ $? -ne 0 ]; then
+        echo "Error building CLI for $platform"
+        exit 1
+    fi
+done
+
+echo "CLI build complete!"
+echo ""
+
+# ============================================================================
+# SUMMARY
+# ============================================================================
+echo "Build complete! Binaries in dist/ directory:"
+echo ""
+ls -lh dist/ | tail -n +2 | awk '{print "  " $9 " (" $5 ")"}'
+echo ""
+echo "Usage:"
+echo "  Node:  ./dist/rebellion-darwin-amd64 --port 5001 --api-port 8001"
+echo "  CLI:   ./dist/rebellion-cli-darwin-amd64 wallet create"
