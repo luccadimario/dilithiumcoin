@@ -33,6 +33,9 @@ type Node struct {
 	Port         string
 	MessageCh    chan Message
 
+	// Peer management (v2.0)
+	PeerManager  *PeerManager
+
 	// Mining state
 	MinerAddress   string
 	miningCancel   chan struct{}
@@ -233,9 +236,13 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 		return
 	}
 
-	// Verify proof of work
-	target := createTarget(n.Blockchain.Difficulty)
-	if len(block.Hash) < n.Blockchain.Difficulty || block.Hash[:n.Blockchain.Difficulty] != target {
+	// Verify proof of work using the block's own difficulty
+	blockDifficulty := block.Difficulty
+	if blockDifficulty == 0 {
+		blockDifficulty = n.Blockchain.Difficulty // Fallback for legacy blocks
+	}
+	target := createTarget(blockDifficulty)
+	if len(block.Hash) < blockDifficulty || block.Hash[:blockDifficulty] != target {
 		fmt.Printf("Block #%d has invalid proof of work\n", block.Index)
 		n.Blockchain.mutex.Unlock()
 		return
@@ -244,6 +251,13 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 	// Verify hash is correct
 	if block.Hash != block.CalculateHash() {
 		fmt.Printf("Block #%d has invalid hash\n", block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Validate all transactions in the block have sufficient funds
+	if err := n.Blockchain.ValidateBlockTransactions(&block, n.Blockchain.Blocks); err != nil {
+		fmt.Printf("Block #%d has invalid transactions: %v\n", block.Index, err)
 		n.Blockchain.mutex.Unlock()
 		return
 	}
@@ -300,6 +314,13 @@ func (n *Node) handleChainMessage(msg Message, peerAddr string) {
 
 // broadcastTransaction sends a transaction to all connected peers
 func (n *Node) broadcastTransaction(tx *Transaction) {
+	// Use PeerManager if available (v2.0)
+	if n.PeerManager != nil {
+		n.PeerManager.BroadcastTransaction(tx)
+		return
+	}
+
+	// Legacy fallback
 	msg := Message{
 		Type:      "transaction",
 		Data:      tx,
@@ -311,6 +332,13 @@ func (n *Node) broadcastTransaction(tx *Transaction) {
 
 // broadcastBlock sends a block to all connected peers
 func (n *Node) broadcastBlock(block *Block) {
+	// Use PeerManager if available (v2.0)
+	if n.PeerManager != nil {
+		n.PeerManager.BroadcastBlock(block)
+		return
+	}
+
+	// Legacy fallback
 	msg := Message{
 		Type:      "block",
 		Data:      block,
@@ -454,8 +482,25 @@ func (n *Node) cancelMining() {
 
 // isValidChain validates an entire blockchain
 func (n *Node) isValidChain(chain []*Block) bool {
+	if len(chain) == 0 {
+		return false
+	}
+
+	// Verify genesis block matches
+	if chain[0].Hash != GenesisBlock.Hash {
+		fmt.Printf("Chain has invalid genesis block hash: %s (expected %s)\n", chain[0].Hash, GenesisBlock.Hash)
+		return false
+	}
+
 	for i := 1; i < len(chain); i++ {
 		if !n.isBlockValid(chain[i], chain[i-1]) {
+			return false
+		}
+
+		// Validate transactions in this block have sufficient funds
+		// Use blocks 0 to i-1 as the state before this block
+		if err := n.Blockchain.ValidateBlockTransactions(chain[i], chain[:i]); err != nil {
+			fmt.Printf("Chain validation failed at block %d: %v\n", i, err)
 			return false
 		}
 	}
@@ -474,9 +519,13 @@ func (n *Node) isBlockValid(currentBlock, previousBlock *Block) bool {
 		return false
 	}
 
-	// Verify proof of work
-	target := createTarget(n.Blockchain.Difficulty)
-	if currentBlock.Hash[:n.Blockchain.Difficulty] != target {
+	// Verify proof of work using the block's own difficulty
+	blockDifficulty := currentBlock.Difficulty
+	if blockDifficulty == 0 {
+		blockDifficulty = n.Blockchain.Difficulty // Fallback for legacy blocks
+	}
+	target := createTarget(blockDifficulty)
+	if len(currentBlock.Hash) < blockDifficulty || currentBlock.Hash[:blockDifficulty] != target {
 		return false
 	}
 

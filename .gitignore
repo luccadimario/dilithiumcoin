@@ -1,8 +1,13 @@
 # Binaries
 dist/
 *.exe
+dilithium
+dilithium-cli
+dilithium-miner
+myblockchain
 rebellion
 rebellion-cli
+rebellion-miner
 
 # IDE
 .idea/

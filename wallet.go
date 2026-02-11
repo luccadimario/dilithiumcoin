@@ -29,7 +29,7 @@ func NewWallet() (*Wallet, error) {
 	// Create address from public key hash
 	pubKeyBytes := publicKey.N.Bytes()
 	hash := sha256.Sum256(pubKeyBytes)
-	address := hex.EncodeToString(hash[:])[:16] // First 16 chars of hash
+	address := hex.EncodeToString(hash[:])[:40] // First 40 chars of hash (20 bytes)
 
 	wallet := &Wallet{
 		Address:    address,

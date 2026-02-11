@@ -28,7 +28,7 @@ func SetupUPnP(port string) (string, error) {
 	fmt.Sscanf(port, "%d", &portNum)
 	
 	// Forward the port (TCP and UDP)
-	err = d.Forward(portNum, "Rebellion Node P2P", "TCP")
+	err = d.Forward(portNum, "Dilithium Node P2P", "TCP")
 	if err != nil {
 		fmt.Printf("Failed to forward port: %v\n", err)
 		return externalIP, err
