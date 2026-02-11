@@ -1,8 +1,8 @@
-# Rebellion
+# Dilithium
 
 A peer-to-peer cryptocurrency blockchain implementation in Go with competitive proof-of-work mining.
 
-**Token Symbol:** RBL
+**Token Symbol:** DLT
 **Tagline:** Decentralized. Distributed. Revolutionary.
 
 ## Features
@@ -22,74 +22,92 @@ A peer-to-peer cryptocurrency blockchain implementation in Go with competitive p
 
 Download the appropriate binary for your platform from the [Releases](../../releases) page.
 
-| Platform | Node | CLI |
-|----------|------|-----|
-| macOS (Apple Silicon) | `rebellion-darwin-arm64` | `rebellion-cli-darwin-arm64` |
-| macOS (Intel) | `rebellion-darwin-amd64` | `rebellion-cli-darwin-amd64` |
-| Linux (x64) | `rebellion-linux-amd64` | `rebellion-cli-linux-amd64` |
-| Linux (ARM64) | `rebellion-linux-arm64` | `rebellion-cli-linux-arm64` |
-| Windows (x64) | `rebellion-windows-amd64.exe` | `rebellion-cli-windows-amd64.exe` |
+| Platform | Node | CLI | Miner |
+|----------|------|-----|-------|
+| macOS (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` |
+| macOS (Intel) | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` |
+| Linux (x64) | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` |
+| Linux (ARM64) | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` |
+| Windows (x64) | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` |
+
+### Build from Source
+
+```bash
+git clone https://github.com/luccadimario/dilithiumcoin.git
+cd dilithiumcoin
+./build.sh
+```
+
+Requires Go 1.25 or later.
 
 ### Run a Node
 
 ```bash
 # Start a node with auto-mining
-./rebellion-darwin-arm64 --port 5001 --api-port 8001 --auto-mine --miner YOUR_WALLET_ADDRESS
+./dilithium --port 5001 --api-port 8001 --auto-mine --miner YOUR_WALLET_ADDRESS
 
 # Connect to an existing node
-./rebellion-darwin-arm64 --port 5002 --api-port 8002 --connect PEER_IP:5001 --auto-mine --miner YOUR_WALLET_ADDRESS
+./dilithium --port 5002 --api-port 8002 --connect PEER_IP:5001 --auto-mine --miner YOUR_WALLET_ADDRESS
 ```
 
 ### Create a Wallet
 
 ```bash
-# Create a new wallet
-./rebellion-cli-darwin-arm64 wallet create --save ~/.rebellion
+./dilithium-cli wallet create
+```
 
-# View wallet info
-./rebellion-cli-darwin-arm64 wallet info --key ~/.rebellion/wallet_private.pem
+### Start Mining
+
+```bash
+./dilithium-miner --node http://localhost:8001 --miner YOUR_WALLET_ADDRESS
 ```
 
 ### Send a Transaction
 
 ```bash
-# Sign a transaction
-./rebellion-cli-darwin-arm64 transaction sign \
-  --from YOUR_ADDRESS \
-  --to RECIPIENT_ADDRESS \
-  --amount 50 \
-  --key ~/.rebellion/wallet_private.pem
-
-# The CLI outputs a curl command to submit the transaction
+./dilithium-cli send --to RECIPIENT_ADDRESS --amount 10
 ```
 
-## Node Commands
+## Node Flags
 
 ```
-rebellion [flags]
+dilithium [flags]
 
 Flags:
   --port string       P2P port (default "5001")
   --api-port string   HTTP API port (default "8001")
-  --difficulty int    Mining difficulty - number of leading zeros (default 3)
+  --difficulty int    Mining difficulty (default 6)
   --connect string    Peer address to connect to (e.g., "192.168.1.10:5001")
   --miner string      Your wallet address for mining rewards
-  --auto-mine         Enable automatic mining when transactions are pending
-  --version           Show version
+  --auto-mine         Enable automatic mining
+  --data-dir string   Data directory path
+  --testnet           Run on testnet
+  --no-seeds          Don't connect to seed nodes (for local testing)
+  --version           Show version and exit
 ```
 
 ## CLI Commands
 
 ```
-rebellion-cli wallet create --save <directory>    Create a new wallet
-rebellion-cli wallet info --key <file>            Display wallet information
-rebellion-cli transaction sign [flags]            Sign a transaction
+dilithium-cli wallet create                Create a new wallet
+dilithium-cli wallet info                  Display wallet information
+dilithium-cli address                      Show wallet address
+dilithium-cli balance                      Check wallet balance
+dilithium-cli send --to <addr> --amount N  Send DLT to an address
+dilithium-cli tx sign [flags]              Sign a transaction
+```
 
-Transaction Flags:
-  --from string     Sender address (your wallet)
-  --to string       Recipient address
-  --amount float    Amount to send
-  --key string      Path to your private key file
+## Miner Flags
+
+```
+dilithium-miner [flags]
+
+Flags:
+  --node string       Node API URL (default "http://localhost:8001")
+  --miner string      Miner wallet address
+  --threads int       Number of mining threads (default 1)
+  --wallet string     Wallet directory (auto-detect address)
+  --version           Show version
 ```
 
 ## API Endpoints
@@ -133,11 +151,11 @@ curl -X POST "http://localhost:8001/add-peer?address=192.168.1.10:5001"
 ### Single Machine (Testing)
 
 ```bash
-# Terminal 1 - First node (creates the initial blockchain)
-./rebellion --port 5001 --api-port 8001 --auto-mine --miner wallet1
+# Terminal 1 - First node
+./dilithium --port 5001 --api-port 8001 --auto-mine --miner wallet1
 
-# Terminal 2 - Second node (connects and competes for mining)
-./rebellion --port 5002 --api-port 8002 --connect localhost:5001 --auto-mine --miner wallet2
+# Terminal 2 - Second node (connects and competes)
+./dilithium --port 5002 --api-port 8002 --connect localhost:5001 --auto-mine --miner wallet2
 
 # Terminal 3 - Submit transactions
 curl -X POST http://localhost:8001/transaction \
@@ -149,10 +167,10 @@ curl -X POST http://localhost:8001/transaction \
 
 ```bash
 # Machine A (first node - share your IP with others)
-./rebellion --port 5001 --api-port 8001 --auto-mine --miner your_address
+./dilithium --port 5001 --api-port 8001 --auto-mine --miner your_address
 
 # Machine B (connect to Machine A)
-./rebellion --port 5001 --api-port 8001 --connect MACHINE_A_IP:5001 --auto-mine --miner your_address
+./dilithium --port 5001 --api-port 8001 --connect MACHINE_A_IP:5001 --auto-mine --miner your_address
 ```
 
 ## How Mining Works
@@ -163,48 +181,28 @@ curl -X POST http://localhost:8001/transaction \
 4. Mining involves finding a hash with N leading zeros (proof-of-work)
 5. The first node to find a valid hash broadcasts the block
 6. Other nodes verify and accept the block, abandoning their mining attempt
-7. The winning miner receives a reward (10 RBL by default)
+7. The winning miner receives a reward (10 DLT by default)
 8. All nodes sync to the longest valid chain
-
-## Building from Source
-
-### Prerequisites
-
-- Go 1.21 or later
-
-### Build
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/rebellion.git
-cd rebellion
-
-# Build for your platform
-go build -o rebellion .
-go build -o rebellion-cli ./cmd/rebellion-cli
-
-# Or build for all platforms
-chmod +x build.sh
-./build.sh
-```
 
 ## Project Structure
 
 ```
-rebellion/
+dilithiumcoin/
 ├── main.go           # Node entry point and CLI flags
 ├── blockchain.go     # Block and blockchain implementation
 ├── transaction.go    # Transaction structure and validation
 ├── network.go        # P2P networking and message handling
 ├── wallet.go         # Wallet and cryptographic signing
 ├── api.go            # HTTP REST API server
+├── config.go         # Node configuration
+├── mempool.go        # Transaction mempool
+├── message.go        # P2P message types
+├── peer.go           # Peer management
 ├── upnp.go           # UPnP port forwarding
 ├── build.sh          # Multi-platform build script
 ├── cmd/
-│   └── rebellion-cli/
-│       ├── main.go        # CLI entry point
-│       ├── wallet.go      # Wallet commands
-│       └── transaction.go # Transaction signing
+│   ├── dilithium-cli/    # CLI tool
+│   └── dilithium-miner/  # Standalone miner
 └── dist/             # Built binaries (see Releases)
 ```
 
