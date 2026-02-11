@@ -94,10 +94,11 @@ jobs:
             # Create a wallet
             ./dilithium-cli wallet create
 
-            # Start the node
-            ./dilithium --port 5001 --api-port 8001
+            # Start mining (auto-starts an embedded node)
+            ./dilithium-miner --miner <your-address>
 
-            # Start mining (in another terminal)
+            # Or run node and miner separately
+            ./dilithium --port 5001 --api-port 8001
             ./dilithium-miner --node http://localhost:8001 --miner <your-address>
             ```
 

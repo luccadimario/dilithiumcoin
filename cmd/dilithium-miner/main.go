@@ -11,16 +11,17 @@ import (
 )
 
 const (
-	AppVersion = "2.1.0"
+	AppVersion = "2.2.0"
 	AppName    = "dilithium-miner"
 )
 
 func main() {
-	nodeURL := flag.String("node", "http://localhost:8001", "Node API URL")
+	nodeURL := flag.String("node", "", "Node API URL (if not set, an embedded node is started)")
 	minerAddr := flag.String("miner", "", "Miner wallet address")
 	threads := flag.Int("threads", 1, "Number of mining threads")
 	walletDir := flag.String("wallet", "", "Wallet directory (auto-detect address)")
 	showVersion := flag.Bool("version", false, "Show version")
+	noNode := flag.Bool("no-node", false, "Disable embedded node (requires --node)")
 
 	flag.Parse()
 
@@ -58,20 +59,45 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Clean up node URL
-	*nodeURL = strings.TrimRight(*nodeURL, "/")
+	// Determine node URL: start embedded node or use provided URL
+	var nodeRunner *NodeRunner
+	activeNodeURL := *nodeURL
 
-	fmt.Printf("Node:    %s\n", *nodeURL)
+	if activeNodeURL == "" && !*noNode {
+		// No explicit node URL — start an embedded node
+		var err error
+		nodeRunner, err = StartEmbeddedNode()
+		if err != nil {
+			fmt.Printf("Error starting embedded node: %v\n", err)
+			fmt.Println()
+			fmt.Println("You can run a node separately and use --node to connect:")
+			fmt.Println("  dilithium-miner --node http://localhost:8001 --miner <address>")
+			os.Exit(1)
+		}
+		activeNodeURL = nodeRunner.APIURL()
+	} else if activeNodeURL == "" {
+		// --no-node set but no --node provided
+		fmt.Println("Error: --no-node requires --node <url>")
+		os.Exit(1)
+	}
+
+	// Clean up node URL
+	activeNodeURL = strings.TrimRight(activeNodeURL, "/")
+
+	fmt.Printf("Node:    %s\n", activeNodeURL)
 	fmt.Printf("Miner:   %s\n", address)
 	fmt.Printf("Threads: %d\n", *threads)
 	fmt.Println()
 
 	// Verify connectivity
-	if err := checkNode(*nodeURL); err != nil {
-		fmt.Printf("Error: Cannot connect to node at %s\n", *nodeURL)
+	if err := checkNode(activeNodeURL); err != nil {
+		fmt.Printf("Error: Cannot connect to node at %s\n", activeNodeURL)
 		fmt.Printf("       %v\n", err)
 		fmt.Println()
 		fmt.Println("Is the node running?")
+		if nodeRunner != nil {
+			nodeRunner.Stop()
+		}
 		os.Exit(1)
 	}
 
@@ -81,7 +107,7 @@ func main() {
 	fmt.Println()
 
 	// Start mining
-	miner := NewMiner(*nodeURL, address, *threads)
+	miner := NewMiner(activeNodeURL, address, *threads)
 	miner.Start()
 
 	// Wait for interrupt
@@ -92,6 +118,11 @@ func main() {
 	fmt.Println("\nStopping miner...")
 	miner.Stop()
 	miner.PrintStats()
+
+	// Stop embedded node if we started one
+	if nodeRunner != nil {
+		nodeRunner.Stop()
+	}
 }
 
 func loadMinerAddress(walletDir string) (string, error) {
