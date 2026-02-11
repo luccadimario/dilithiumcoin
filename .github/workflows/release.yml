@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Cross-compile binaries
+        run: |
+          mkdir -p dist
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          LDFLAGS="-X main.AppVersion=${VERSION}"
+
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+
+          binaries=(
+            "dilithium:."
+            "dilithium-cli:./cmd/dilithium-cli"
+            "dilithium-miner:./cmd/dilithium-miner"
+          )
+
+          for binary in "${binaries[@]}"; do
+            IFS=':' read -r name path <<< "$binary"
+            for platform in "${platforms[@]}"; do
+              IFS='/' read -r GOOS GOARCH <<< "$platform"
+              output="dist/${name}-${GOOS}-${GOARCH}"
+              if [ "$GOOS" = "windows" ]; then
+                output="${output}.exe"
+              fi
+              echo "Building ${name} for ${GOOS}/${GOARCH}..."
+              env CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+                -ldflags "$LDFLAGS" \
+                -o "$output" \
+                "$path"
+            done
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums-sha256.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Dilithium ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*
+          body: |
+            ## Dilithium ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | Node | CLI | Miner |
+            |----------|------|-----|-------|
+            | Linux x86_64 | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` |
+            | Linux ARM64 | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` |
+            | macOS x86_64 | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` |
+            | macOS ARM64 (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` |
+            | Windows x86_64 | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` |
+
+            ### Quick Start
+
+            ```bash
+            # Make binaries executable (macOS/Linux)
+            chmod +x dilithium*
+
+            # Create a wallet
+            ./dilithium-cli wallet create
+
+            # Start the node
+            ./dilithium --port 5001 --api-port 8001
+
+            # Start mining (in another terminal)
+            ./dilithium-miner --node http://localhost:8001 --miner <your-address>
+            ```
+
+            ### Verify Downloads
+
+            SHA-256 checksums are available in `checksums-sha256.txt`.
