@@ -73,6 +73,10 @@ Requires Go 1.25 or later.
 ### Start Mining
 
 ```bash
+# Simplest — auto-starts an embedded node
+./dilithium-miner --miner YOUR_WALLET_ADDRESS
+
+# Or connect to your own node
 ./dilithium-miner --node http://localhost:8001 --miner YOUR_WALLET_ADDRESS
 ```
 
@@ -117,12 +121,15 @@ dilithium-cli tx sign [flags]              Sign a transaction
 dilithium-miner [flags]
 
 Flags:
-  --node string       Node API URL (default "http://localhost:8001")
   --miner string      Miner wallet address
+  --node string       Node API URL (if not set, an embedded node is started)
+  --no-node           Disable embedded node (requires --node)
   --threads int       Number of mining threads (default 1)
   --wallet string     Wallet directory (auto-detect address)
   --version           Show version
 ```
+
+The miner automatically starts an embedded `dilithium` node if no `--node` URL is provided. Both binaries must be in the same directory (or the node binary must be in your PATH).
 
 ## API Endpoints
 
