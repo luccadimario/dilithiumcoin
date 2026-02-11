@@ -1,11 +1,6 @@
 package main
 
 import (
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"flag"
@@ -15,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cloudflare/circl/sign/dilithium/mode3"
 )
 
 // DLTUnit is the number of base units in 1 DLT (like satoshis)
@@ -85,29 +82,19 @@ func cmdSend(args []string) {
 		os.Exit(1)
 	}
 
-	// Get public key PEM for inclusion in transaction
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		fmt.Printf("Error encoding public key: %v\n", err)
-		os.Exit(1)
-	}
-	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: publicKeyBytes,
-	}))
+	// Get hex-encoded public key for inclusion in transaction
+	pk := privateKey.Public().(*mode3.PublicKey)
+	pubKeyBytes, _ := pk.MarshalBinary()
+	publicKeyHex := hex.EncodeToString(pubKeyBytes)
 
 	// Create and sign transaction
 	timestamp := time.Now().Unix()
 	txData := fmt.Sprintf("%s%s%d%d", fromAddress, toAddress, amount, timestamp)
-	hash := sha256.Sum256([]byte(txData))
 
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hash[:])
-	if err != nil {
-		fmt.Printf("Error signing transaction: %v\n", err)
-		os.Exit(1)
-	}
-
-	signatureHex := hex.EncodeToString(signature)
+	// Dilithium signs the raw message directly
+	sig := make([]byte, mode3.SignatureSize)
+	mode3.SignTo(privateKey, []byte(txData), sig)
+	signatureHex := hex.EncodeToString(sig)
 
 	// Show transaction details
 	fmt.Println()
@@ -125,7 +112,7 @@ func cmdSend(args []string) {
 		"amount":     amount,
 		"timestamp":  timestamp,
 		"signature":  signatureHex,
-		"public_key": publicKeyPEM,
+		"public_key": publicKeyHex,
 	}
 
 	resp, err := postJSON(*nodeURL+"/transaction", tx)
@@ -195,7 +182,7 @@ func cmdSignTransaction(args []string) {
 	}
 
 	// Load private key
-	var privateKey *rsa.PrivateKey
+	var privateKey *mode3.PrivateKey
 	var err error
 
 	if *keyFile != "" {
@@ -209,29 +196,19 @@ func cmdSignTransaction(args []string) {
 		os.Exit(1)
 	}
 
-	// Get public key PEM
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		fmt.Printf("Error encoding public key: %v\n", err)
-		os.Exit(1)
-	}
-	publicKeyPEM := string(pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: publicKeyBytes,
-	}))
+	// Get hex-encoded public key
+	pk := privateKey.Public().(*mode3.PublicKey)
+	pubKeyBytes, _ := pk.MarshalBinary()
+	publicKeyHex := hex.EncodeToString(pubKeyBytes)
 
 	// Create and sign transaction
 	timestamp := time.Now().Unix()
 	txData := fmt.Sprintf("%s%s%d%d", *from, *to, amount, timestamp)
-	hash := sha256.Sum256([]byte(txData))
 
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hash[:])
-	if err != nil {
-		fmt.Printf("Error signing transaction: %v\n", err)
-		os.Exit(1)
-	}
-
-	signatureHex := hex.EncodeToString(signature)
+	// Dilithium signs the raw message directly
+	sig := make([]byte, mode3.SignatureSize)
+	mode3.SignTo(privateKey, []byte(txData), sig)
+	signatureHex := hex.EncodeToString(sig)
 
 	// Display the signed transaction
 	fmt.Println()
@@ -252,9 +229,9 @@ func cmdSignTransaction(args []string) {
   "amount": %d,
   "timestamp": %d,
   "signature": "%s",
-  "public_key": "<your_public_key_pem>"
+  "public_key": "%s"
 }
-`, *from, *to, amount, timestamp, signatureHex)
+`, *from, *to, amount, timestamp, signatureHex, publicKeyHex)
 	fmt.Println()
 
 	// Show curl command
@@ -262,11 +239,11 @@ func cmdSignTransaction(args []string) {
 	fmt.Printf("curl -X POST http://localhost:8001/transaction \\\n")
 	fmt.Printf("  -H 'Content-Type: application/json' \\\n")
 	fmt.Printf("  -d '{\"from\":\"%s\",\"to\":\"%s\",\"amount\":%d,\"timestamp\":%d,\"signature\":\"%s\",\"public_key\":\"%s\"}'\n",
-		*from, *to, amount, timestamp, signatureHex, strings.ReplaceAll(strings.ReplaceAll(publicKeyPEM, "\n", "\\n"), "\"", "\\\""))
+		*from, *to, amount, timestamp, signatureHex, publicKeyHex)
 }
 
 // loadPrivateKeyFromFile loads a private key from a specific file
-func loadPrivateKeyFromFile(keyFile string) (*rsa.PrivateKey, error) {
+func loadPrivateKeyFromFile(keyFile string) (*mode3.PrivateKey, error) {
 	keyData, err := os.ReadFile(keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("could not read key file: %w", err)
@@ -277,20 +254,10 @@ func loadPrivateKeyFromFile(keyFile string) (*rsa.PrivateKey, error) {
 		return nil, fmt.Errorf("invalid PEM format")
 	}
 
-	privateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		// Try PKCS1 format
-		rsaKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("could not parse private key")
-		}
-		return rsaKey, nil
+	var sk mode3.PrivateKey
+	if err := sk.UnmarshalBinary(block.Bytes); err != nil {
+		return nil, fmt.Errorf("could not parse Dilithium private key: %w", err)
 	}
 
-	rsaPrivateKey, ok := privateKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("not an RSA private key")
-	}
-
-	return rsaPrivateKey, nil
+	return &sk, nil
 }

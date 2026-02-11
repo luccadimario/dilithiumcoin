@@ -2,15 +2,15 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/cloudflare/circl/sign/dilithium/mode3"
 )
 
 // cmdInit creates a new wallet (first-time setup)
@@ -29,18 +29,18 @@ func cmdInit(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Println("Creating new wallet...")
+	fmt.Println("Creating new quantum-safe wallet...")
 	fmt.Println()
 
-	// Generate 2048-bit RSA key pair
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// Generate CRYSTALS-Dilithium Mode3 key pair (192-bit quantum-safe)
+	publicKey, privateKey, err := mode3.GenerateKey(rand.Reader)
 	if err != nil {
 		fmt.Printf("Error generating key pair: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Create address from public key hash
-	pubKeyBytes := privateKey.PublicKey.N.Bytes()
+	pubKeyBytes, _ := publicKey.MarshalBinary()
 	hash := sha256.Sum256(pubKeyBytes)
 	address := hex.EncodeToString(hash[:])[:40]
 
@@ -50,16 +50,11 @@ func cmdInit(args []string) {
 		os.Exit(1)
 	}
 
-	// Save private key
-	privateKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		fmt.Printf("Error encoding private key: %v\n", err)
-		os.Exit(1)
-	}
-
+	// Save private key as PEM
+	privKeyBytes, _ := privateKey.MarshalBinary()
 	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: privateKeyBytes,
+		Type:  "DILITHIUM PRIVATE KEY",
+		Bytes: privKeyBytes,
 	})
 
 	if err := os.WriteFile(privateKeyPath, privateKeyPEM, 0600); err != nil {
@@ -67,17 +62,11 @@ func cmdInit(args []string) {
 		os.Exit(1)
 	}
 
-	// Save public key
+	// Save public key as PEM
 	publicKeyPath := filepath.Join(*walletDir, "public.pem")
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		fmt.Printf("Error encoding public key: %v\n", err)
-		os.Exit(1)
-	}
-
 	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: publicKeyBytes,
+		Type:  "DILITHIUM PUBLIC KEY",
+		Bytes: pubKeyBytes,
 	})
 
 	if err := os.WriteFile(publicKeyPath, publicKeyPEM, 0644); err != nil {
@@ -96,7 +85,9 @@ func cmdInit(args []string) {
 	fmt.Println("        WALLET CREATED SUCCESSFULLY")
 	fmt.Println("========================================")
 	fmt.Println()
-	fmt.Printf("  Address: %s\n", address)
+	fmt.Printf("  Algorithm: CRYSTALS-Dilithium Mode3\n")
+	fmt.Printf("  Security:  192-bit (quantum-safe)\n")
+	fmt.Printf("  Address:   %s\n", address)
 	fmt.Println()
 	fmt.Printf("  Location: %s\n", *walletDir)
 	fmt.Println()
@@ -151,6 +142,8 @@ func cmdWalletInfo(args []string) {
 	publicKeyPath := filepath.Join(*walletDir, "public.pem")
 
 	fmt.Println("========== WALLET INFO ==========")
+	fmt.Printf("Algorithm:    CRYSTALS-Dilithium Mode3\n")
+	fmt.Printf("Security:     192-bit (quantum-safe)\n")
 	fmt.Printf("Address:      %s\n", address)
 	fmt.Printf("Location:     %s\n", *walletDir)
 	fmt.Printf("Private Key:  %s\n", privateKeyPath)
@@ -196,50 +189,40 @@ func showKeyInfo(keyFile string) {
 		os.Exit(1)
 	}
 
-	var publicKey *rsa.PublicKey
+	var address string
 
 	switch block.Type {
-	case "PRIVATE KEY":
-		privateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
+	case "DILITHIUM PRIVATE KEY":
+		var sk mode3.PrivateKey
+		if err := sk.UnmarshalBinary(block.Bytes); err != nil {
 			fmt.Printf("Error parsing private key: %v\n", err)
 			os.Exit(1)
 		}
-		rsaPrivateKey, ok := privateKey.(*rsa.PrivateKey)
-		if !ok {
-			fmt.Println("Error: Key is not an RSA private key")
-			os.Exit(1)
-		}
-		publicKey = &rsaPrivateKey.PublicKey
-		fmt.Println("Key Type: Private Key (RSA)")
+		pk := sk.Public().(*mode3.PublicKey)
+		pubKeyBytes, _ := pk.MarshalBinary()
+		hash := sha256.Sum256(pubKeyBytes)
+		address = hex.EncodeToString(hash[:])[:40]
+		fmt.Println("Key Type: Private Key (CRYSTALS-Dilithium Mode3)")
 
-	case "PUBLIC KEY":
-		pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
+	case "DILITHIUM PUBLIC KEY":
+		var pk mode3.PublicKey
+		if err := pk.UnmarshalBinary(block.Bytes); err != nil {
 			fmt.Printf("Error parsing public key: %v\n", err)
 			os.Exit(1)
 		}
-		var ok bool
-		publicKey, ok = pubKey.(*rsa.PublicKey)
-		if !ok {
-			fmt.Println("Error: Key is not an RSA public key")
-			os.Exit(1)
-		}
-		fmt.Println("Key Type: Public Key (RSA)")
+		hash := sha256.Sum256(block.Bytes)
+		address = hex.EncodeToString(hash[:])[:40]
+		fmt.Println("Key Type: Public Key (CRYSTALS-Dilithium Mode3)")
 
 	default:
 		fmt.Printf("Error: Unknown PEM block type: %s\n", block.Type)
 		os.Exit(1)
 	}
 
-	// Derive address
-	pubKeyBytes := publicKey.N.Bytes()
-	hash := sha256.Sum256(pubKeyBytes)
-	address := hex.EncodeToString(hash[:])[:40]
-
 	fmt.Println("\n========== KEY INFO ==========")
+	fmt.Printf("Algorithm:  CRYSTALS-Dilithium Mode3\n")
+	fmt.Printf("Security:   192-bit (quantum-safe)\n")
 	fmt.Printf("Address:    %s\n", address)
-	fmt.Printf("Key Size:   %d bits\n", publicKey.Size()*8)
 	fmt.Printf("Key File:   %s\n", keyFile)
 	fmt.Println("===============================")
 }
@@ -264,23 +247,19 @@ func loadAddress(walletDir string) (string, error) {
 		return "", fmt.Errorf("invalid PEM format")
 	}
 
-	privateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return "", err
+	var sk mode3.PrivateKey
+	if err := sk.UnmarshalBinary(block.Bytes); err != nil {
+		return "", fmt.Errorf("could not parse private key: %w", err)
 	}
 
-	rsaPrivateKey, ok := privateKey.(*rsa.PrivateKey)
-	if !ok {
-		return "", fmt.Errorf("not an RSA key")
-	}
-
-	pubKeyBytes := rsaPrivateKey.PublicKey.N.Bytes()
+	pk := sk.Public().(*mode3.PublicKey)
+	pubKeyBytes, _ := pk.MarshalBinary()
 	hash := sha256.Sum256(pubKeyBytes)
 	return hex.EncodeToString(hash[:])[:40], nil
 }
 
 // loadPrivateKey loads the private key from wallet directory
-func loadPrivateKey(walletDir string) (*rsa.PrivateKey, error) {
+func loadPrivateKey(walletDir string) (*mode3.PrivateKey, error) {
 	privateKeyPath := filepath.Join(walletDir, "private.pem")
 	keyData, err := os.ReadFile(privateKeyPath)
 	if err != nil {
@@ -292,15 +271,10 @@ func loadPrivateKey(walletDir string) (*rsa.PrivateKey, error) {
 		return nil, fmt.Errorf("invalid PEM format")
 	}
 
-	privateKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
+	var sk mode3.PrivateKey
+	if err := sk.UnmarshalBinary(block.Bytes); err != nil {
 		return nil, fmt.Errorf("could not parse private key: %w", err)
 	}
 
-	rsaPrivateKey, ok := privateKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("not an RSA private key")
-	}
-
-	return rsaPrivateKey, nil
+	return &sk, nil
 }

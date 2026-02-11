@@ -1,17 +1,31 @@
 # Dilithium
 
-A peer-to-peer cryptocurrency blockchain implementation in Go with competitive proof-of-work mining.
+A quantum-safe, peer-to-peer cryptocurrency blockchain implementation in Go with competitive proof-of-work mining.
 
 **Token Symbol:** DLT
-**Tagline:** Decentralized. Distributed. Revolutionary.
+**Tagline:** Quantum-Safe. Decentralized. Revolutionary.
+
+## Quantum Safety
+
+Dilithium is one of the first blockchains with **native post-quantum cryptographic signatures**. All transactions are signed using **CRYSTALS-Dilithium Mode3** (the NIST post-quantum standard), providing **192-bit quantum-safe security**. This means Dilithium wallets and transactions are resistant to attacks from both classical and quantum computers.
+
+| Property | Value |
+|----------|-------|
+| Algorithm | CRYSTALS-Dilithium Mode3 |
+| Security Level | NIST Level 3 (192-bit quantum-safe) |
+| Public Key Size | 1,952 bytes |
+| Private Key Size | 4,000 bytes |
+| Signature Size | 3,293 bytes |
+| Library | [Cloudflare CIRCL](https://github.com/cloudflare/circl) |
 
 ## Features
 
+- **Post-Quantum Security** - CRYSTALS-Dilithium Mode3 signatures (NIST PQC standard)
 - **Proof-of-Work Mining** - SHA-256 based mining with configurable difficulty
 - **Competitive Mining** - Multiple nodes compete to mine blocks; first valid block wins
 - **P2P Networking** - Nodes automatically sync and broadcast transactions/blocks
 - **Automatic Mining** - Nodes can auto-mine when transactions are pending
-- **Wallet Management** - RSA-2048 key pairs for signing transactions
+- **Wallet Management** - Quantum-safe Dilithium key pairs for signing transactions
 - **REST API** - HTTP endpoints for interacting with the node
 - **UPnP Support** - Automatic port forwarding for easier connectivity
 - **Cross-Platform** - Builds for Linux, macOS, and Windows (amd64/arm64)

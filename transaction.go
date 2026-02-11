@@ -1,9 +1,8 @@
 package main
 
 import (
-	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"strconv"
 	"strings"
@@ -90,15 +89,12 @@ func (t *Transaction) Sign(wallet *Wallet) error {
 
 	t.Signature = signature
 
-	// Attach public key PEM
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(wallet.PublicKey)
+	// Attach hex-encoded public key
+	pubKeyBytes, err := wallet.PublicKey.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("failed to marshal public key: %v", err)
 	}
-	t.PublicKey = string(pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: publicKeyBytes,
-	}))
+	t.PublicKey = hex.EncodeToString(pubKeyBytes)
 
 	return nil
 }

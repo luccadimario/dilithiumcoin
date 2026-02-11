@@ -549,5 +549,5 @@ func (n *Node) PrintStatus() {
 		}
 		fmt.Printf("  Block #%d: %s\n", block.Index, hashDisplay)
 	}
-	fmt.Println("================================\n")
+	fmt.Println("================================")
 }

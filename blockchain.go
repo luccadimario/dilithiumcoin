@@ -1,17 +1,15 @@
 package main
 
 import (
-	"crypto"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/cloudflare/circl/sign/dilithium/mode3"
 )
 
 // Difficulty adjustment constants
@@ -494,7 +492,7 @@ func (bc *Blockchain) PrintBlockchain() {
 	for _, block := range bc.Blocks {
 		bc.printBlock(block)
 	}
-	fmt.Println("================================\n")
+	fmt.Println("================================")
 }
 
 // printBlock displays a single block's information
@@ -598,31 +596,25 @@ func createTarget(difficulty int) string {
 // SIGNATURE VERIFICATION
 // ============================================================================
 
-// VerifyTransactionSignature verifies the RSA-SHA256 signature on a transaction
+// VerifyTransactionSignature verifies the CRYSTALS-Dilithium signature on a transaction
 func VerifyTransactionSignature(tx *Transaction) error {
 	if tx.PublicKey == "" {
 		return fmt.Errorf("transaction missing public key")
 	}
 
-	// Decode public key PEM
-	block, _ := pem.Decode([]byte(tx.PublicKey))
-	if block == nil {
-		return fmt.Errorf("failed to decode public key PEM")
-	}
-
-	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	// Decode hex-encoded public key
+	pubKeyBytes, err := hex.DecodeString(tx.PublicKey)
 	if err != nil {
-		return fmt.Errorf("failed to parse public key: %w", err)
+		return fmt.Errorf("failed to decode public key hex: %w", err)
 	}
 
-	rsaPubKey, ok := pubKey.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("not an RSA public key")
+	var pk mode3.PublicKey
+	if err := pk.UnmarshalBinary(pubKeyBytes); err != nil {
+		return fmt.Errorf("failed to unmarshal Dilithium public key: %w", err)
 	}
 
 	// Recreate the signed data
 	txData := fmt.Sprintf("%s%s%d%d", tx.From, tx.To, tx.Amount, tx.Timestamp)
-	hashed := sha256.Sum256([]byte(txData))
 
 	// Decode signature
 	sigBytes, err := hex.DecodeString(tx.Signature)
@@ -631,34 +623,22 @@ func VerifyTransactionSignature(tx *Transaction) error {
 	}
 
 	// Verify signature
-	err = rsa.VerifyPKCS1v15(rsaPubKey, crypto.SHA256, hashed[:], sigBytes)
-	if err != nil {
-		return fmt.Errorf("signature verification failed: %w", err)
+	if !mode3.Verify(&pk, []byte(txData), sigBytes) {
+		return fmt.Errorf("signature verification failed")
 	}
 
 	return nil
 }
 
 // VerifyAddressMatchesPublicKey derives the address from the public key and compares
-func VerifyAddressMatchesPublicKey(address, publicKeyPEM string) error {
-	// Decode public key PEM
-	block, _ := pem.Decode([]byte(publicKeyPEM))
-	if block == nil {
-		return fmt.Errorf("failed to decode public key PEM")
-	}
-
-	pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+func VerifyAddressMatchesPublicKey(address, publicKeyHex string) error {
+	// Decode hex-encoded public key
+	pubKeyBytes, err := hex.DecodeString(publicKeyHex)
 	if err != nil {
-		return fmt.Errorf("failed to parse public key: %w", err)
-	}
-
-	rsaPubKey, ok := pubKey.(*rsa.PublicKey)
-	if !ok {
-		return fmt.Errorf("not an RSA public key")
+		return fmt.Errorf("failed to decode public key hex: %w", err)
 	}
 
 	// Derive address from public key (same algorithm as wallet.go)
-	pubKeyBytes := rsaPubKey.N.Bytes()
 	hash := sha256.Sum256(pubKeyBytes)
 	derivedAddress := hex.EncodeToString(hash[:])[:40]
 
