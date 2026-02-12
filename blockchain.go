@@ -400,13 +400,8 @@ func (bc *Blockchain) GetCurrentDifficultyBitsLocked() int {
 
 	// Check if we're at an adjustment boundary
 	if height%BlocksPerAdjustment != 0 {
-		// Not at adjustment boundary, use last block's effective difficulty bits
-		lastBlock := bc.Blocks[height-1]
-		bits := lastBlock.getEffectiveDifficultyBits()
-		if bits == 0 {
-			return bc.DifficultyBits
-		}
-		return bits
+		// Not at adjustment boundary — use blockchain's tracked difficulty
+		return bc.DifficultyBits
 	}
 
 	// Use cached result if we already calculated for this height
@@ -414,10 +409,12 @@ func (bc *Blockchain) GetCurrentDifficultyBitsLocked() int {
 		return bc.lastAdjustmentBits
 	}
 
-	// Calculate difficulty adjustment and cache it
+	// Calculate difficulty adjustment, cache it, and update blockchain state
 	bits := bc.calculateNewDifficultyBits()
 	bc.lastAdjustmentHeight = height
 	bc.lastAdjustmentBits = bits
+	bc.DifficultyBits = bits
+	bc.Difficulty = difficultyBitsToHexDigits(bits)
 	return bits
 }
 
@@ -440,11 +437,10 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 	// Expected time for the period
 	expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
 
-	// Current difficulty in bits (from the last block)
-	currentBits := endBlock.getEffectiveDifficultyBits()
-	if currentBits == 0 {
-		currentBits = bc.DifficultyBits
-	}
+	// Current difficulty in bits (from blockchain state, not from blocks)
+	// Legacy v3.0.1 blocks don't set DifficultyBits, so reading from blocks
+	// would always return the initial value. Use blockchain's tracked state.
+	currentBits := bc.DifficultyBits
 
 	// Calculate adjustment ratio
 	ratio := float64(expectedTime) / float64(actualTime)
