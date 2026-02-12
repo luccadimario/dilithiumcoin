@@ -17,7 +17,8 @@ type APIResponse struct {
 }
 
 // StartAPI starts the HTTP server for the node
-func (n *Node) StartAPI(apiHost, apiPort string) {
+// If tlsCert and tlsKey are provided, it starts an HTTPS server (shannon #4)
+func (n *Node) StartAPI(apiHost, apiPort, tlsCert, tlsKey string) {
 	mux := http.NewServeMux()
 
 	// Register all routes
@@ -35,8 +36,15 @@ func (n *Node) StartAPI(apiHost, apiPort string) {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	if err := server.ListenAndServe(); err != nil {
-		fmt.Printf("API error: %v\n", err)
+	if tlsCert != "" && tlsKey != "" {
+		fmt.Printf("TLS enabled (cert: %s)\n", tlsCert)
+		if err := server.ListenAndServeTLS(tlsCert, tlsKey); err != nil {
+			fmt.Printf("API TLS error: %v\n", err)
+		}
+	} else {
+		if err := server.ListenAndServe(); err != nil {
+			fmt.Printf("API error: %v\n", err)
+		}
 	}
 }
 
@@ -69,40 +77,45 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 // registerRoutes registers all API endpoints
 func (n *Node) registerRoutes(mux *http.ServeMux) {
-	// Node info
-	mux.HandleFunc("/", n.handleRoot)
-	mux.HandleFunc("/status", n.handleStatus)
-	mux.HandleFunc("/version", n.handleVersion)
+	// Rate limiters for different endpoint categories
+	writeLimiter := NewRateLimiter(30, time.Minute)   // 30 req/min for state-changing ops
+	mineLimiter := NewRateLimiter(10, time.Minute)     // 10 req/min for mining
+	readLimiter := NewRateLimiter(120, time.Minute)    // 120 req/min for reads
+
+	// Node info (read-limited)
+	mux.HandleFunc("/", rateLimitMiddleware(readLimiter, n.handleRoot))
+	mux.HandleFunc("/status", rateLimitMiddleware(readLimiter, n.handleStatus))
+	mux.HandleFunc("/version", rateLimitMiddleware(readLimiter, n.handleVersion))
 
 	// Blockchain endpoints
-	mux.HandleFunc("/chain", n.handleGetChain)
-	mux.HandleFunc("/block", n.handleGetBlock)
-	mux.HandleFunc("/block/submit", n.handleBlockSubmit)
-	mux.HandleFunc("/mine", n.handleMine)
+	mux.HandleFunc("/chain", rateLimitMiddleware(readLimiter, n.handleGetChain))
+	mux.HandleFunc("/block", rateLimitMiddleware(readLimiter, n.handleGetBlock))
+	mux.HandleFunc("/block/submit", rateLimitMiddleware(writeLimiter, n.handleBlockSubmit))
+	mux.HandleFunc("/mine", rateLimitMiddleware(mineLimiter, n.handleMine))
 
 	// Transaction endpoints
-	mux.HandleFunc("/transaction", n.handleTransaction)
-	mux.HandleFunc("/mempool", n.handleGetMempool)
-	mux.HandleFunc("/mempool/stats", n.handleMempoolStats)
+	mux.HandleFunc("/transaction", rateLimitMiddleware(writeLimiter, n.handleTransaction))
+	mux.HandleFunc("/mempool", rateLimitMiddleware(readLimiter, n.handleGetMempool))
+	mux.HandleFunc("/mempool/stats", rateLimitMiddleware(readLimiter, n.handleMempoolStats))
 
-	// Peer endpoints
-	mux.HandleFunc("/peers", n.handlePeers)
-	mux.HandleFunc("/peers/add", n.handleAddPeer)
-	mux.HandleFunc("/peers/ban", n.handleBanPeer)
-	mux.HandleFunc("/peers/unban", n.handleUnbanPeer)
-	mux.HandleFunc("/peers/banned", n.handleGetBanned)
+	// Peer endpoints (write-limited for sensitive ops)
+	mux.HandleFunc("/peers", rateLimitMiddleware(readLimiter, n.handlePeers))
+	mux.HandleFunc("/peers/add", rateLimitMiddleware(writeLimiter, n.handleAddPeer))
+	mux.HandleFunc("/peers/ban", rateLimitMiddleware(writeLimiter, n.handleBanPeer))
+	mux.HandleFunc("/peers/unban", rateLimitMiddleware(writeLimiter, n.handleUnbanPeer))
+	mux.HandleFunc("/peers/banned", rateLimitMiddleware(readLimiter, n.handleGetBanned))
 
 	// Network endpoints
-	mux.HandleFunc("/network", n.handleNetworkStats)
-	mux.HandleFunc("/network/addresses", n.handleGetAddresses)
+	mux.HandleFunc("/network", rateLimitMiddleware(readLimiter, n.handleNetworkStats))
+	mux.HandleFunc("/network/addresses", rateLimitMiddleware(readLimiter, n.handleGetAddresses))
 
 	// Explorer endpoints (for block explorer / dashboard)
-	mux.HandleFunc("/stats", n.handleExplorerStats)
-	mux.HandleFunc("/explorer/tx", n.handleExplorerTx)
-	mux.HandleFunc("/explorer/address", n.handleGetAddress)
+	mux.HandleFunc("/stats", rateLimitMiddleware(readLimiter, n.handleExplorerStats))
+	mux.HandleFunc("/explorer/tx", rateLimitMiddleware(readLimiter, n.handleExplorerTx))
+	mux.HandleFunc("/explorer/address", rateLimitMiddleware(readLimiter, n.handleGetAddress))
 
 	// Legacy endpoints (backwards compatibility)
-	mux.HandleFunc("/add-peer", n.handleAddPeerLegacy)
+	mux.HandleFunc("/add-peer", rateLimitMiddleware(writeLimiter, n.handleAddPeerLegacy))
 }
 
 // printAPIInfo prints API endpoint information
@@ -230,7 +243,7 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 // BLOCKCHAIN ENDPOINTS
 // ============================================================================
 
-// handleGetChain returns the entire blockchain
+// handleGetChain returns the blockchain with pagination (shannon #5)
 func (n *Node) handleGetChain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
@@ -238,13 +251,47 @@ func (n *Node) handleGetChain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	blocks := n.Blockchain.GetBlocks()
+	totalHeight := len(blocks)
+
+	// Parse pagination params (default: last 50 blocks)
+	limitStr := r.URL.Query().Get("limit")
+	pageStr := r.URL.Query().Get("page")
+
+	limit := 50 // default
+	if limitStr != "" {
+		if l, err := strconv.ParseInt(limitStr, 10, 64); err == nil && l > 0 {
+			limit = int(l)
+		}
+	}
+	if limit > 500 {
+		limit = 500 // hard cap
+	}
+
+	page := 0
+	if pageStr != "" {
+		if p, err := strconv.ParseInt(pageStr, 10, 64); err == nil && p >= 0 {
+			page = int(p)
+		}
+	}
+
+	start := page * limit
+	if start >= totalHeight {
+		start = totalHeight
+	}
+	end := start + limit
+	if end > totalHeight {
+		end = totalHeight
+	}
 
 	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Blockchain retrieved",
 		Data: map[string]interface{}{
-			"height": len(blocks),
-			"blocks": blocks,
+			"height":     totalHeight,
+			"page":       page,
+			"limit":      limit,
+			"total_pages": (totalHeight + limit - 1) / limit,
+			"blocks":     blocks[start:end],
 		},
 	})
 }
@@ -905,11 +952,8 @@ func (n *Node) handleExplorerStats(w http.ResponseWriter, r *http.Request) {
 	blocks := n.Blockchain.GetBlocks()
 	height := len(blocks)
 
-	// Calculate total transactions
-	totalTxs := 0
-	for _, block := range blocks {
-		totalTxs += len(block.Transactions)
-	}
+	// Use cached total transaction count (shannon #19)
+	totalTxs := n.Blockchain.GetTotalTransactions()
 
 	// Get current difficulty (both formats)
 	currentDifficulty := n.Blockchain.GetCurrentDifficulty()
@@ -1063,45 +1107,9 @@ func (n *Node) handleGetAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blocks := n.Blockchain.GetBlocks()
-
-	// Calculate balance and find transactions
-	var balance int64
-	var transactions []map[string]interface{}
-	var received, sent int64
-	txCount := 0
-
-	for _, block := range blocks {
-		for _, tx := range block.Transactions {
-			isRelevant := false
-
-			if tx.To == address {
-				balance += tx.Amount
-				received += tx.Amount
-				isRelevant = true
-			}
-
-			if tx.From == address {
-				balance -= tx.Amount
-				sent += tx.Amount
-				isRelevant = true
-			}
-
-			if isRelevant {
-				txCount++
-				transactions = append(transactions, map[string]interface{}{
-					"signature":   tx.Signature,
-					"from":        tx.From,
-					"to":          tx.To,
-					"amount":      tx.Amount,
-					"amount_dlt":  FormatDLT(tx.Amount),
-					"timestamp":   tx.Timestamp,
-					"block_index": block.Index,
-					"block_hash":  block.Hash,
-				})
-			}
-		}
-	}
+	// Use blockchain method to get address info (shannon #19)
+	balance, received, sent, transactions := n.Blockchain.GetAddressInfo(address)
+	txCount := len(transactions)
 
 	// Check pending transactions
 	var pendingTxs []map[string]interface{}

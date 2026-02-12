@@ -99,13 +99,11 @@ func (t *Transaction) Sign(wallet *Wallet) error {
 	return nil
 }
 
-// IsValid validates the transaction signature
-func (t *Transaction) IsValid() bool {
-	if t.Signature == "" {
-		return false
-	}
-
-	return true
+// HasSignature checks if the transaction has a signature attached.
+// NOTE: This does NOT verify the cryptographic signature.
+// Use blockchain.VerifyTransactionSignature() for full verification.
+func (t *Transaction) HasSignature() bool {
+	return t.Signature != ""
 }
 
 // ToJSON converts transaction to JSON

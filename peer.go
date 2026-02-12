@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -116,6 +117,10 @@ type Peer struct {
 	BytesRecv     uint64
 	MsgsSent      uint64
 	MsgsRecv      uint64
+
+	// Rate limiting (shannon #9)
+	msgWindowStart time.Time
+	msgWindowCount int
 
 	// State management
 	mutex         sync.RWMutex
@@ -230,10 +235,28 @@ func (p *Peer) readLoop() {
 		}
 
 		p.mutex.Lock()
-		p.LastSeen = time.Now()
+		now := time.Now()
+		p.LastSeen = now
 		p.BytesRecv += uint64(len(data))
 		p.MsgsRecv++
+
+		// P2P message rate limiting (shannon #9)
+		// Allow 100 messages per 10 seconds per peer
+		if now.Sub(p.msgWindowStart) > 10*time.Second {
+			p.msgWindowStart = now
+			p.msgWindowCount = 1
+		} else {
+			p.msgWindowCount++
+		}
+		rateLimited := p.msgWindowCount > 100
 		p.mutex.Unlock()
+
+		if rateLimited {
+			host, _, _ := net.SplitHostPort(p.Addr)
+			p.manager.Ban(host, "P2P message rate limit exceeded")
+			fmt.Printf("Banned peer %s: message rate limit exceeded\n", p.Addr)
+			return
+		}
 
 		p.manager.handleMessage(p, msg)
 	}
@@ -476,7 +499,8 @@ func (pm *PeerManager) Connect(addr string) error {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err == nil {
 		var port uint16
-		fmt.Sscanf(portStr, "%d", &port)
+		p, _ := strconv.ParseUint(portStr, 10, 16)
+		port = uint16(p)
 		if pm.isConnectedByListenPort(host, port) {
 			return fmt.Errorf("already connected to peer at port %d", port)
 		}
@@ -1000,7 +1024,8 @@ func (pm *PeerManager) GetAddresses(max int) []*NetAddr {
 			}
 
 			var portNum uint16
-			fmt.Sscanf(port, "%d", &portNum)
+			p, _ := strconv.ParseUint(port, 10, 16)
+		portNum = uint16(p)
 			addrs = append(addrs, NewNetAddr(host, portNum, peer.Services))
 		}
 		if len(addrs) >= max {
@@ -1399,7 +1424,8 @@ func (pm *PeerManager) AddSeedNode(addr string) {
 	}
 
 	var portNum uint16
-	fmt.Sscanf(port, "%d", &portNum)
+	p, _ := strconv.ParseUint(port, 10, 16)
+	portNum = uint16(p)
 
 	netAddr := NewNetAddr(host, portNum, SFNodeNetwork)
 	pm.AddAddress(netAddr, "seed")

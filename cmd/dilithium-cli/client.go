@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -325,7 +326,12 @@ func cmdBlock(args []string) {
 
 	var blockIndex int
 	if len(remaining) > 0 {
-		fmt.Sscanf(remaining[0], "%d", &blockIndex)
+		idx, err := strconv.ParseInt(remaining[0], 10, 64)
+		if err != nil {
+			fmt.Printf("Error: Invalid block index '%s'\n", remaining[0])
+			os.Exit(1)
+		}
+		blockIndex = int(idx)
 		if blockIndex < 0 || blockIndex >= len(blocks) {
 			fmt.Printf("Error: Block %d not found (chain height: %d)\n", blockIndex, len(blocks))
 			os.Exit(1)

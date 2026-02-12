@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"strconv"
+
 	"github.com/jcuga/go-upnp"
 )
 
@@ -24,8 +26,8 @@ func SetupUPnP(port string) (string, error) {
 	}
 	
 	// Convert port string to uint16
-	var portNum uint16
-	fmt.Sscanf(port, "%d", &portNum)
+	p, _ := strconv.ParseUint(port, 10, 16)
+	portNum := uint16(p)
 	
 	// Forward the port (TCP and UDP)
 	err = d.Forward(portNum, "Dilithium Node P2P", "TCP")

@@ -154,6 +154,11 @@ type Blockchain struct {
 	mutex               sync.RWMutex
 	lastAdjustmentHeight int   // Cache: last height we computed adjustment
 	lastAdjustmentBits   int   // Cache: result of that computation
+
+	// Balance cache (shannon #19) — avoids full chain scan per request
+	balanceCache       map[string]int64 // address -> balance
+	balanceCacheHeight int              // chain height when cache was built
+	totalTxCache       int              // cached total transaction count
 }
 
 // NewBlockchain initializes a new blockchain with genesis block
@@ -537,9 +542,12 @@ func (bc *Blockchain) recalcDifficultyFromChain() {
 		// Replay from the period AFTER the anchor's period
 		startPeriod = (anchorHeight / BlocksPerAdjustment) + 1
 	} else {
-		// No v3.0.9 blocks found — use initial difficulty as baseline
+		// No v3.0.9 blocks found — use the chain's hex difficulty as baseline
 		// and replay the last few periods to catch up
-		currentBits = MinDifficultyBits
+		currentBits = hexDigitsToDifficultyBits(bc.Difficulty)
+		if currentBits < MinDifficultyBits {
+			currentBits = MinDifficultyBits
+		}
 		startPeriod = lastPeriod - 5
 		if startPeriod < 1 {
 			startPeriod = 1
@@ -889,29 +897,17 @@ func validateTransaction(tx *Transaction) error {
 // BALANCE & REWARD FUNCTIONS
 // ============================================================================
 
-// GetBalance calculates the confirmed balance of an address from the blockchain
+// GetBalance calculates the confirmed balance using the cache (shannon #19)
 func (bc *Blockchain) GetBalance(address string) int64 {
 	bc.mutex.RLock()
 	defer bc.mutex.RUnlock()
 	return bc.getBalanceLocked(address)
 }
 
-// getBalanceLocked calculates balance (must hold lock)
+// getBalanceLocked calculates balance using cache (must hold lock)
 func (bc *Blockchain) getBalanceLocked(address string) int64 {
-	var balance int64
-
-	for _, block := range bc.Blocks {
-		for _, tx := range block.Transactions {
-			if tx.To == address {
-				balance += tx.Amount
-			}
-			if tx.From == address {
-				balance -= tx.Amount
-			}
-		}
-	}
-
-	return balance
+	bc.ensureBalanceCache()
+	return bc.balanceCache[address]
 }
 
 // GetAvailableBalance returns balance minus pending outgoing transactions
@@ -970,6 +966,74 @@ func (bc *Blockchain) GetTotalSupply() int64 {
 		}
 	}
 	return total
+}
+
+// ensureBalanceCache builds or refreshes the balance cache if stale
+// Must be called with at least an RLock held
+func (bc *Blockchain) ensureBalanceCache() {
+	height := len(bc.Blocks)
+	if bc.balanceCache != nil && bc.balanceCacheHeight == height {
+		return // cache is fresh
+	}
+
+	bc.balanceCache = make(map[string]int64)
+	bc.totalTxCache = 0
+	for _, block := range bc.Blocks {
+		for _, tx := range block.Transactions {
+			bc.totalTxCache++
+			if tx.To != "" {
+				bc.balanceCache[tx.To] += tx.Amount
+			}
+			if tx.From != "" {
+				bc.balanceCache[tx.From] -= tx.Amount
+			}
+		}
+	}
+	bc.balanceCacheHeight = height
+}
+
+// GetTotalTransactions returns the total transaction count using the cache
+func (bc *Blockchain) GetTotalTransactions() int {
+	bc.mutex.RLock()
+	bc.ensureBalanceCache()
+	total := bc.totalTxCache
+	bc.mutex.RUnlock()
+	return total
+}
+
+// GetAddressInfo returns balance and transaction history for an address
+func (bc *Blockchain) GetAddressInfo(address string) (balance, received, sent int64, txs []map[string]interface{}) {
+	bc.mutex.RLock()
+	defer bc.mutex.RUnlock()
+
+	for _, block := range bc.Blocks {
+		for _, tx := range block.Transactions {
+			isRelevant := false
+			if tx.To == address {
+				balance += tx.Amount
+				received += tx.Amount
+				isRelevant = true
+			}
+			if tx.From == address {
+				balance -= tx.Amount
+				sent += tx.Amount
+				isRelevant = true
+			}
+			if isRelevant {
+				txs = append(txs, map[string]interface{}{
+					"signature":   tx.Signature,
+					"from":        tx.From,
+					"to":          tx.To,
+					"amount":      tx.Amount,
+					"amount_dlt":  FormatDLT(tx.Amount),
+					"timestamp":   tx.Timestamp,
+					"block_index": block.Index,
+					"block_hash":  block.Hash,
+				})
+			}
+		}
+	}
+	return
 }
 
 // GetSupplyInfo returns supply statistics

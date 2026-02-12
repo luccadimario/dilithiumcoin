@@ -92,7 +92,7 @@ func main() {
 
 	// Start API server
 	if config.API.Enabled {
-		go node.StartAPI(config.API.Host, config.API.Port)
+		go node.StartAPI(config.API.Host, config.API.Port, flags.TLSCert, flags.TLSKey)
 	}
 
 	// Setup UPnP port forwarding
@@ -147,6 +147,8 @@ type Flags struct {
 	DataDir    string
 	Testnet    bool
 	NoSeeds    bool
+	TLSCert    string
+	TLSKey     string
 }
 
 // parseFlags parses command-line arguments
@@ -163,6 +165,8 @@ func parseFlags() Flags {
 	flag.StringVar(&flags.DataDir, "data-dir", "", "Data directory path")
 	flag.BoolVar(&flags.Testnet, "testnet", false, "Run on testnet")
 	flag.BoolVar(&flags.NoSeeds, "no-seeds", false, "Don't connect to seed nodes (for local testing)")
+	flag.StringVar(&flags.TLSCert, "tls-cert", "", "TLS certificate file for HTTPS API")
+	flag.StringVar(&flags.TLSKey, "tls-key", "", "TLS key file for HTTPS API")
 	flag.Parse()
 	return flags
 }
