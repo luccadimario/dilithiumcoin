@@ -98,12 +98,20 @@ jobs:
       - name: Build wallet app
         run: |
           cd cmd/dilithium-wallet
-          wails build -platform darwin/universal
+          wails build
 
-      - name: Create DMG
+      - name: Find .app bundle and create DMG
         run: |
-          APP_PATH="cmd/dilithium-wallet/build/bin/dilithium-wallet.app"
-          DMG_NAME="Dilithium-Wallet-macOS.dmg"
+          mkdir -p dist
+
+          # Find the .app bundle wherever Wails put it
+          APP_PATH=$(find cmd/dilithium-wallet/build/bin -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No .app bundle found. Contents of build/bin:"
+            ls -la cmd/dilithium-wallet/build/bin/
+            exit 1
+          fi
+          echo "Found app bundle: $APP_PATH"
 
           # Create a temporary directory for DMG contents
           mkdir -p dmg-staging
@@ -114,7 +122,7 @@ jobs:
           hdiutil create -volname "Dilithium Wallet" \
             -srcfolder dmg-staging \
             -ov -format UDZO \
-            "dist/${DMG_NAME}"
+            "dist/Dilithium-Wallet-macOS.dmg"
 
       - name: Upload macOS wallet
         uses: actions/upload-artifact@v4
@@ -187,7 +195,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
 
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
