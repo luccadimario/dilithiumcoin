@@ -231,6 +231,15 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 			fmt.Printf("Ignoring block #%d - we already have this height\n", block.Index)
 		} else {
 			fmt.Printf("Block #%d doesn't connect - requesting full chain sync\n", block.Index)
+			// Actually request chain sync from the peer
+			if n.PeerManager != nil {
+				n.Blockchain.mutex.Unlock()
+				peer := n.PeerManager.GetPeerByAddr(peerAddr)
+				if peer != nil {
+					n.PeerManager.requestChainSync(peer)
+				}
+				return
+			}
 		}
 		n.Blockchain.mutex.Unlock()
 		return

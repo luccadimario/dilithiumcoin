@@ -799,9 +799,14 @@ func (pm *PeerManager) handleGetData(peer *Peer, msg *GetDataMsg) {
 				peer.SendMessage(MsgTypeTx, NewTxMsg(tx))
 			}
 		case InvTypeBlock:
-			block := pm.node.Blockchain.GetBlock(inv.Hash)
-			if block != nil {
-				peer.SendMessage(MsgTypeBlock, NewBlockMsg(block))
+			if inv.Hash == "sync" {
+				// Special sync request — send full chain
+				pm.sendChain(peer)
+			} else {
+				block := pm.node.Blockchain.GetBlock(inv.Hash)
+				if block != nil {
+					peer.SendMessage(MsgTypeBlock, NewBlockMsg(block))
+				}
 			}
 		}
 	}
@@ -1274,12 +1279,26 @@ func (pm *PeerManager) sendChain(peer *Peer) {
 
 // requestChainSync requests the blockchain from a peer
 func (pm *PeerManager) requestChainSync(peer *Peer) {
-	// For now, we rely on the peer sending us the chain
-	// In a more sophisticated implementation, we'd use getblocks/getdata
-	// The peer should send us their chain in handleVersionAck when they see we're behind
+	// Request the peer's chain by sending a getdata for a block inventory
+	// The peer will respond with their full chain
+	ourHeight := pm.node.Blockchain.GetBlockCount()
+	fmt.Printf("Requesting chain sync from %s (our height: %d)\n", peer.Addr, ourHeight)
 
-	// Send a message indicating we want their chain
-	// Using legacy chain request - peer will respond with their chain
+	// Send a legacy chain request that triggers sendChain on the peer side
+	inv := []*InvVector{NewInvVector(InvTypeBlock, "sync")}
+	peer.SendMessage(MsgTypeGetData, NewGetDataMsg(inv))
+}
+
+// GetPeerByAddr returns a connected peer by address, or nil if not found
+func (pm *PeerManager) GetPeerByAddr(addr string) *Peer {
+	pm.peerMutex.RLock()
+	defer pm.peerMutex.RUnlock()
+	for _, peer := range pm.peers {
+		if peer.Addr == addr {
+			return peer
+		}
+	}
+	return nil
 }
 
 // ============================================================================
