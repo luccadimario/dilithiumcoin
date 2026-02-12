@@ -117,27 +117,37 @@ func (nr *NodeRunner) waitForReady(timeout time.Duration) error {
 // findDilithiumBinary looks for the dilithium binary in the same directory
 // as the miner executable, then falls back to PATH.
 func findDilithiumBinary() (string, error) {
-	binaryName := "dilithium"
-	if runtime.GOOS == "windows" {
-		binaryName = "dilithium.exe"
+	// Names to search for, in priority order
+	names := []string{"dilithium"}
+	switch runtime.GOOS {
+	case "windows":
+		names = []string{"dilithium.exe", "dilithium-windows-amd64.exe"}
+	case "darwin":
+		names = append(names, "dilithium-darwin-amd64", "dilithium-darwin-arm64")
+	default: // linux
+		names = append(names, "dilithium-linux-amd64", "dilithium-linux-arm64")
 	}
 
 	// Check same directory as the miner executable
 	execPath, err := os.Executable()
 	if err == nil {
-		sameDir := filepath.Join(filepath.Dir(execPath), binaryName)
-		if _, err := os.Stat(sameDir); err == nil {
-			return sameDir, nil
+		dir := filepath.Dir(execPath)
+		for _, name := range names {
+			candidate := filepath.Join(dir, name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
 		}
 	}
 
 	// Fall back to PATH
-	pathBinary, err := exec.LookPath(binaryName)
-	if err == nil {
-		return pathBinary, nil
+	for _, name := range names {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
 	}
 
-	return "", fmt.Errorf("%s not found in same directory as miner or in PATH", binaryName)
+	return "", fmt.Errorf("dilithium not found in same directory as miner or in PATH")
 }
 
 // findFreePort asks the OS for an available TCP port.
