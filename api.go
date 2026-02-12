@@ -291,14 +291,22 @@ func (n *Node) handleBlockSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify proof of work
-	blockDifficulty := block.Difficulty
-	if blockDifficulty == 0 {
+	// Verify the block's difficulty matches what we expect
+	expectedDifficulty := n.Blockchain.GetCurrentDifficulty()
+	if block.Difficulty != expectedDifficulty {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf(
+			"Block difficulty %d does not match expected difficulty %d",
+			block.Difficulty, expectedDifficulty))
+		return
+	}
+
+	// Verify proof of work meets the expected difficulty
+	if block.Difficulty == 0 {
 		respondError(w, http.StatusBadRequest, "Block missing difficulty")
 		return
 	}
-	target := createTarget(blockDifficulty)
-	if len(block.Hash) < blockDifficulty || block.Hash[:blockDifficulty] != target {
+	target := createTarget(block.Difficulty)
+	if len(block.Hash) < block.Difficulty || block.Hash[:block.Difficulty] != target {
 		respondError(w, http.StatusBadRequest, "Block does not meet difficulty target")
 		return
 	}

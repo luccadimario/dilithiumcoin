@@ -34,7 +34,7 @@ func StartEmbeddedNode() (*NodeRunner, error) {
 	fmt.Printf("Starting embedded node (binary: %s, API port: %d)...\n", binaryPath, apiPort)
 
 	cmd := exec.Command(binaryPath,
-		"--port", "9090",
+		"--port", "1701",
 		"--api-port", strconv.Itoa(apiPort),
 	)
 	cmd.Stdout = os.Stdout

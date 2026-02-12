@@ -15,7 +15,7 @@ import (
 // Difficulty adjustment constants
 const (
 	// BlocksPerAdjustment is how often difficulty adjusts (like Bitcoin's 2016)
-	BlocksPerAdjustment = 100
+	BlocksPerAdjustment = 50
 
 	// TargetBlockTime is the desired time between blocks in seconds
 	TargetBlockTime = 60 // 1 minute per block
@@ -412,13 +412,21 @@ func (bc *Blockchain) calculateNewDifficulty() int {
 		ratio = 1.0 / MaxAdjustmentFactor
 	}
 
-	// Calculate new difficulty
+	// Calculate new difficulty using proportional scaling
+	// Each unit of difficulty is roughly 16x harder (hex digits)
+	// Use log-based scaling: ratio of 16 = +1 difficulty, 1/16 = -1 difficulty
 	var newDifficulty int
-	if ratio > 1.2 {
-		// Blocks coming too fast, increase difficulty
+	if ratio > 16.0 {
+		// Way too fast — jump by 2
+		newDifficulty = currentDifficulty + 2
+	} else if ratio > 2.0 {
+		// Too fast — increase by 1
 		newDifficulty = currentDifficulty + 1
-	} else if ratio < 0.8 {
-		// Blocks coming too slow, decrease difficulty
+	} else if ratio < 1.0/16.0 {
+		// Way too slow — decrease by 2
+		newDifficulty = currentDifficulty - 2
+	} else if ratio < 0.5 {
+		// Too slow — decrease by 1
 		newDifficulty = currentDifficulty - 1
 	} else {
 		// Within acceptable range, keep same

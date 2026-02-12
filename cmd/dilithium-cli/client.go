@@ -70,6 +70,26 @@ func getJSON(url string) (*APIResponse, error) {
 	return &apiResp, nil
 }
 
+// SeedNodeAPI is the public seed node API URL used as fallback
+const SeedNodeAPI = "https://api.dilithiumcoin.com"
+
+// resolveNodeURL tries the provided URL, falls back to seed node if unreachable
+func resolveNodeURL(nodeURL string) string {
+	// Try the provided URL first
+	quickClient := &http.Client{Timeout: 3 * time.Second}
+	resp, err := quickClient.Get(nodeURL + "/status")
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			return nodeURL
+		}
+	}
+
+	// Fall back to seed node
+	fmt.Printf("Local node (%s) not reachable, using seed node...\n", nodeURL)
+	return SeedNodeAPI
+}
+
 // cmdBalance checks balance for an address
 func cmdBalance(args []string) {
 	fs := flag.NewFlagSet("balance", flag.ExitOnError)
@@ -96,10 +116,13 @@ func cmdBalance(args []string) {
 		address = addr
 	}
 
-	// Get blockchain to calculate balance
-	resp, err := getJSON(*nodeURL + "/chain")
+	// Resolve which node to query (local or seed)
+	activeNode := resolveNodeURL(*nodeURL)
+
+	// Use the /explorer/address endpoint for efficient balance lookup
+	resp, err := getJSON(activeNode + "/explorer/address?addr=" + address)
 	if err != nil {
-		fmt.Printf("Error: Could not connect to node at %s\n", *nodeURL)
+		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
 		fmt.Printf("       %v\n", err)
 		os.Exit(1)
 	}
@@ -109,54 +132,21 @@ func cmdBalance(args []string) {
 		os.Exit(1)
 	}
 
-	// Calculate balance from blockchain
-	balance := calculateBalance(resp.Data, address)
+	balanceDLT, _ := resp.Data["balance_dlt"].(string)
+	txCount := int(getFloat64(resp.Data, "transaction_count"))
+	receivedDLT, _ := resp.Data["total_received_dlt"].(string)
+	sentDLT, _ := resp.Data["total_sent_dlt"].(string)
 
 	fmt.Printf("Address: %s\n", address)
-	fmt.Printf("Balance: %s DLT\n", FormatDLT(balance))
+	fmt.Printf("Balance: %s DLT\n", balanceDLT)
+	fmt.Printf("Total Received: %s DLT\n", receivedDLT)
+	fmt.Printf("Total Sent:     %s DLT\n", sentDLT)
+	fmt.Printf("Transactions:   %d\n", txCount)
 }
 
-// calculateBalance computes balance from blockchain data
-func calculateBalance(data map[string]interface{}, address string) int64 {
-	var balance int64
-
-	blocks, ok := data["blocks"].([]interface{})
-	if !ok {
-		return 0
-	}
-
-	for _, b := range blocks {
-		block, ok := b.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		txs, ok := block["transactions"].([]interface{})
-		if !ok {
-			continue
-		}
-
-		for _, t := range txs {
-			tx, ok := t.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			from, _ := tx["from"].(string)
-			to, _ := tx["to"].(string)
-			// JSON numbers decode as float64; amounts are int64 base units
-			amount := int64(tx["amount"].(float64))
-
-			if to == address {
-				balance += amount
-			}
-			if from == address {
-				balance -= amount
-			}
-		}
-	}
-
-	return balance
+func getFloat64(m map[string]interface{}, key string) float64 {
+	v, _ := m[key].(float64)
+	return v
 }
 
 // cmdStatus shows node status
@@ -165,9 +155,10 @@ func cmdStatus(args []string) {
 	nodeURL := fs.String("node", "http://localhost:8001", "Node API URL")
 	fs.Parse(args)
 
-	resp, err := getJSON(*nodeURL + "/status")
+	activeNode := resolveNodeURL(*nodeURL)
+	resp, err := getJSON(activeNode + "/status")
 	if err != nil {
-		fmt.Printf("Error: Could not connect to node at %s\n", *nodeURL)
+		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
 		fmt.Printf("       %v\n", err)
 		os.Exit(1)
 	}
@@ -222,9 +213,10 @@ func cmdPeers(args []string) {
 	nodeURL := fs.String("node", "http://localhost:8001", "Node API URL")
 	fs.Parse(args)
 
-	resp, err := getJSON(*nodeURL + "/peers")
+	activeNode := resolveNodeURL(*nodeURL)
+	resp, err := getJSON(activeNode + "/peers")
 	if err != nil {
-		fmt.Printf("Error: Could not connect to node at %s\n", *nodeURL)
+		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
 		fmt.Printf("       %v\n", err)
 		os.Exit(1)
 	}
@@ -268,9 +260,10 @@ func cmdMempool(args []string) {
 	nodeURL := fs.String("node", "http://localhost:8001", "Node API URL")
 	fs.Parse(args)
 
-	resp, err := getJSON(*nodeURL + "/mempool")
+	activeNode := resolveNodeURL(*nodeURL)
+	resp, err := getJSON(activeNode + "/mempool")
 	if err != nil {
-		fmt.Printf("Error: Could not connect to node at %s\n", *nodeURL)
+		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
 		fmt.Printf("       %v\n", err)
 		os.Exit(1)
 	}
@@ -308,11 +301,13 @@ func cmdBlock(args []string) {
 
 	remaining := fs.Args()
 
+	activeNode := resolveNodeURL(*nodeURL)
+
 	// If no index specified, show latest block
-	url := *nodeURL + "/chain"
+	url := activeNode + "/chain"
 	resp, err := getJSON(url)
 	if err != nil {
-		fmt.Printf("Error: Could not connect to node at %s\n", *nodeURL)
+		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
 		fmt.Printf("       %v\n", err)
 		os.Exit(1)
 	}
