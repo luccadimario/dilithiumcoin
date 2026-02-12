@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	AppVersion = "2.1.0"
+	AppVersion = "3.0.1"
 	AppName    = "dilithium-cli"
 )
 
