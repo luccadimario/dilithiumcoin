@@ -225,8 +225,6 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 		return
 	}
 
-	fmt.Printf("Received block #%d from %s\n", block.Index, peerAddr)
-
 	n.Blockchain.mutex.Lock()
 
 	if len(n.Blockchain.Blocks) == 0 {
@@ -236,22 +234,25 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 
 	lastBlock := n.Blockchain.Blocks[len(n.Blockchain.Blocks)-1]
 
+	// Quick dedup: silently ignore blocks we already have
+	if block.Index <= lastBlock.Index {
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	fmt.Printf("Received block #%d from %s\n", block.Index, peerAddr)
+
 	// Check if block connects to our chain
 	if block.PreviousHash != lastBlock.Hash {
-		// Could be a block for a future position or different chain
-		if block.Index <= lastBlock.Index {
-			fmt.Printf("Ignoring block #%d - we already have this height\n", block.Index)
-		} else {
-			fmt.Printf("Block #%d doesn't connect - requesting full chain sync\n", block.Index)
-			// Actually request chain sync from the peer
-			if n.PeerManager != nil {
-				n.Blockchain.mutex.Unlock()
-				peer := n.PeerManager.GetPeerByAddr(peerAddr)
-				if peer != nil {
-					n.PeerManager.requestChainSync(peer)
-				}
-				return
+		// Block doesn't connect — request sync if it's ahead
+		fmt.Printf("Block #%d doesn't connect - requesting full chain sync\n", block.Index)
+		if n.PeerManager != nil {
+			n.Blockchain.mutex.Unlock()
+			peer := n.PeerManager.GetPeerByAddr(peerAddr)
+			if peer != nil {
+				n.PeerManager.requestChainSync(peer)
 			}
+			return
 		}
 		n.Blockchain.mutex.Unlock()
 		return
