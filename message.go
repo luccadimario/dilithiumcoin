@@ -27,7 +27,7 @@ const (
 	MaxInvPerMessage = 50000
 
 	// UserAgent identifies this node implementation
-	UserAgent = "/Dilithium:2.1.0/"
+	UserAgent = "/Dilithium:" + Version + "/"
 
 	// PingInterval is how often to send ping messages
 	PingInterval = 2 * time.Minute
