@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	AppVersion = "3.1.1"
+	AppVersion = "3.2.0"
 	AppName    = "dilithium-miner"
 )
 
@@ -22,6 +22,9 @@ func main() {
 	walletDir := flag.String("wallet", "", "Wallet directory (auto-detect address)")
 	showVersion := flag.Bool("version", false, "Show version")
 	noNode := flag.Bool("no-node", false, "Disable embedded node (requires --node)")
+	poolPort := flag.Int("pool-port", 0, "Run as pool server on this port")
+	poolAddr := flag.String("pool", "", "Connect to pool as worker (host:port)")
+	poolFee := flag.Float64("pool-fee", 1.0, "Pool fee percentage (default: 1%)")
 
 	flag.Parse()
 
@@ -32,7 +35,26 @@ func main() {
 
 	printBanner()
 
-	// Resolve miner address
+	// Pool worker mode: connect to a pool server
+	if *poolAddr != "" {
+		fmt.Printf("Mode:    Pool Worker\n")
+		fmt.Printf("Pool:    %s\n", *poolAddr)
+		fmt.Printf("Threads: %d\n", *threads)
+		fmt.Println()
+
+		client := NewPoolClient(*poolAddr, *threads)
+		client.Start()
+
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+
+		fmt.Println("\nStopping pool worker...")
+		client.Stop()
+		return
+	}
+
+	// Resolve miner address (needed for solo mining and pool server)
 	address := *minerAddr
 	if address == "" && *walletDir != "" {
 		addr, err := loadMinerAddress(*walletDir)
@@ -64,7 +86,6 @@ func main() {
 	activeNodeURL := *nodeURL
 
 	if activeNodeURL == "" && !*noNode {
-		// No explicit node URL — start an embedded node
 		var err error
 		nodeRunner, err = StartEmbeddedNode()
 		if err != nil {
@@ -76,18 +97,11 @@ func main() {
 		}
 		activeNodeURL = nodeRunner.APIURL()
 	} else if activeNodeURL == "" {
-		// --no-node set but no --node provided
 		fmt.Println("Error: --no-node requires --node <url>")
 		os.Exit(1)
 	}
 
-	// Clean up node URL
 	activeNodeURL = strings.TrimRight(activeNodeURL, "/")
-
-	fmt.Printf("Node:    %s\n", activeNodeURL)
-	fmt.Printf("Miner:   %s\n", address)
-	fmt.Printf("Threads: %d\n", *threads)
-	fmt.Println()
 
 	// Verify connectivity
 	if err := checkNode(activeNodeURL); err != nil {
@@ -101,16 +115,46 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Pool server mode
+	if *poolPort > 0 {
+		fmt.Printf("Mode:    Pool Server\n")
+		fmt.Printf("Node:    %s\n", activeNodeURL)
+		fmt.Printf("Address: %s\n", address)
+		fmt.Printf("Port:    %d\n", *poolPort)
+		fmt.Printf("Fee:     %.1f%%\n", *poolFee)
+		fmt.Println()
+		fmt.Println("Connected to node successfully!")
+		fmt.Println()
+
+		pool := NewPool(activeNodeURL, address, *poolPort, *poolFee)
+		pool.Start()
+
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+
+		fmt.Println("\nStopping pool server...")
+		pool.Stop()
+		if nodeRunner != nil {
+			nodeRunner.Stop()
+		}
+		return
+	}
+
+	// Solo mining mode
+	fmt.Printf("Mode:    Solo Miner\n")
+	fmt.Printf("Node:    %s\n", activeNodeURL)
+	fmt.Printf("Miner:   %s\n", address)
+	fmt.Printf("Threads: %d\n", *threads)
+	fmt.Println()
 	fmt.Println("Connected to node successfully!")
 	fmt.Println()
 	fmt.Println("Mining started. Press Ctrl+C to stop.")
 	fmt.Println()
 
-	// Start mining
 	miner := NewMiner(activeNodeURL, address, *threads)
 	miner.Start()
 
-	// Wait for interrupt
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
@@ -119,7 +163,6 @@ func main() {
 	miner.Stop()
 	miner.PrintStats()
 
-	// Stop embedded node if we started one
 	if nodeRunner != nil {
 		nodeRunner.Stop()
 	}

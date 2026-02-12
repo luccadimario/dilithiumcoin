@@ -205,30 +205,10 @@ func (m *Miner) getWork() (*BlockTemplate, error) {
 		difficultyBits = int(db)
 	}
 
-	// Get the last block hash from the chain
-	chainResp, err := httpClient.Get(m.nodeURL + "/chain")
-	if err != nil {
-		return nil, fmt.Errorf("cannot get chain: %w", err)
+	lastHash, ok := apiResp.Data["last_block_hash"].(string)
+	if !ok || lastHash == "" {
+		return nil, fmt.Errorf("node did not return last_block_hash in /status")
 	}
-	defer chainResp.Body.Close()
-
-	chainBody, err := io.ReadAll(chainResp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var chainAPI APIResponse
-	if err := json.Unmarshal(chainBody, &chainAPI); err != nil {
-		return nil, fmt.Errorf("invalid chain response")
-	}
-
-	blocks, ok := chainAPI.Data["blocks"].([]interface{})
-	if !ok || len(blocks) == 0 {
-		return nil, fmt.Errorf("no blocks in chain")
-	}
-
-	lastBlock := blocks[len(blocks)-1].(map[string]interface{})
-	lastHash := lastBlock["Hash"].(string)
 
 	// Calculate block reward
 	var reward int64 = 50 * DLTUnit // Default initial reward
@@ -303,7 +283,7 @@ func getFloat(m map[string]interface{}, key string) float64 {
 	return v
 }
 
-// mineBlock performs proof of work
+// mineBlock performs proof of work using multiple threads
 func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*Block, bool) {
 	// Build transactions list: coinbase + pending
 	coinbase := &Transaction{
@@ -318,7 +298,7 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 	txs = append(txs, coinbase)
 	txs = append(txs, pendingTxs...)
 
-	block := &Block{
+	baseBlock := &Block{
 		Index:          template.Index,
 		Timestamp:      time.Now().Unix(),
 		Transactions:   txs,
@@ -329,61 +309,126 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 
 	useBits := template.DifficultyBits > 0
 	if useBits {
-		fmt.Printf("Mining block #%d (difficulty bits: %d, hex: %d)\n",
-			template.Index, template.DifficultyBits, template.Difficulty)
+		fmt.Printf("Mining block #%d (difficulty bits: %d, hex: %d, threads: %d)\n",
+			template.Index, template.DifficultyBits, template.Difficulty, m.threads)
 	} else {
-		fmt.Printf("Mining block #%d (difficulty: %d)\n",
-			template.Index, template.Difficulty)
+		fmt.Printf("Mining block #%d (difficulty: %d, threads: %d)\n",
+			template.Index, template.Difficulty, m.threads)
 	}
 
-	// Mine with cancellation
-	var nonce int64
 	hashPrefix := strings.Repeat("0", template.Difficulty)
 	startTime := time.Now()
-	var localHashes int64
 
-	for {
-		select {
-		case <-m.stopCh:
-			return nil, false
-		default:
-		}
+	resultCh := make(chan *Block, 1)
+	cancelCh := make(chan struct{})
+	var wg sync.WaitGroup
 
-		block.Nonce = nonce
-		hash := calculateBlockHash(block)
-		localHashes++
+	// Spawn mining threads with interleaved nonce ranges
+	for i := 0; i < m.threads; i++ {
+		wg.Add(1)
+		go func(threadID int) {
+			defer wg.Done()
+			nonce := int64(threadID)
+			var localHashes int64
 
-		var meets bool
-		if useBits {
-			meets = meetsDifficultyBits(hash, template.DifficultyBits)
-		} else {
-			meets = strings.HasPrefix(hash, hashPrefix)
-		}
-
-		if meets {
-			block.Hash = hash
-			atomic.AddInt64(&m.totalHashes, localHashes)
-			elapsed := time.Since(startTime).Seconds()
-			if elapsed > 0 {
-				hashrate := float64(localHashes) / elapsed
-				fmt.Printf("Found valid hash after %d hashes (%.0f H/s)\n", localHashes, hashrate)
+			// Each thread gets its own block copy
+			threadBlock := &Block{
+				Index:          baseBlock.Index,
+				Timestamp:      baseBlock.Timestamp,
+				Transactions:   baseBlock.Transactions,
+				PreviousHash:   baseBlock.PreviousHash,
+				Difficulty:     baseBlock.Difficulty,
+				DifficultyBits: baseBlock.DifficultyBits,
 			}
-			return block, true
-		}
 
-		nonce++
+			for {
+				select {
+				case <-cancelCh:
+					atomic.AddInt64(&m.totalHashes, localHashes)
+					return
+				case <-m.stopCh:
+					atomic.AddInt64(&m.totalHashes, localHashes)
+					return
+				default:
+				}
 
-		// Periodically check if chain has advanced
-		if nonce%100000 == 0 {
-			atomic.AddInt64(&m.totalHashes, localHashes)
-			localHashes = 0
+				threadBlock.Nonce = nonce
+				hash := calculateBlockHash(threadBlock)
+				localHashes++
 
-			if m.chainAdvanced(template.Height) {
-				fmt.Println("New block detected from network, restarting...")
-				return nil, false
+				var meets bool
+				if useBits {
+					meets = meetsDifficultyBits(hash, template.DifficultyBits)
+				} else {
+					meets = strings.HasPrefix(hash, hashPrefix)
+				}
+
+				if meets {
+					threadBlock.Hash = hash
+					atomic.AddInt64(&m.totalHashes, localHashes)
+					select {
+					case resultCh <- threadBlock:
+						close(cancelCh)
+					default:
+					}
+					return
+				}
+
+				nonce += int64(m.threads)
 			}
-		}
+		}(i)
 	}
+
+	// Chain-advanced checker goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cancelCh:
+				return
+			case <-m.stopCh:
+				return
+			case <-ticker.C:
+				if m.chainAdvanced(template.Height) {
+					fmt.Println("New block detected from network, restarting...")
+					select {
+					case resultCh <- nil:
+						close(cancelCh)
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	// Wait for result
+	var result *Block
+	select {
+	case result = <-resultCh:
+	case <-m.stopCh:
+		close(cancelCh)
+		wg.Wait()
+		return nil, false
+	}
+
+	wg.Wait()
+
+	if result == nil {
+		// Chain advanced, no valid block
+		return nil, false
+	}
+
+	elapsed := time.Since(startTime).Seconds()
+	totalH := atomic.LoadInt64(&m.totalHashes)
+	if elapsed > 0 {
+		hashrate := float64(totalH) / elapsed
+		fmt.Printf("Found valid hash (%.0f H/s across %d threads)\n", hashrate, m.threads)
+	}
+	return result, true
 }
 
 // chainAdvanced checks if the chain has moved past our template height

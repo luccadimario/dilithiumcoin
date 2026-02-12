@@ -21,3 +21,8 @@ Thumbs.db
 
 # Test wallets
 *.pem
+
+# Wallet desktop app
+cmd/dilithium-wallet/build/bin/
+cmd/dilithium-wallet/frontend/node_modules/
+cmd/dilithium-wallet/frontend/dist/

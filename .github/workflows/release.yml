@@ -9,6 +9,7 @@ permissions:
   contents: write
 
 jobs:
+  # ── Node, CLI, Miner (cross-compiled, no CGO) ──
   release:
     runs-on: ubuntu-latest
     steps:
@@ -65,6 +66,175 @@ jobs:
           cd dist
           sha256sum * > checksums-sha256.txt
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-binaries
+          path: dist/*
+
+  # ── Wallet Desktop App (needs native UI libs per platform) ──
+  wallet-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install frontend dependencies
+        run: cd cmd/dilithium-wallet/frontend && npm install
+
+      - name: Build wallet app
+        run: |
+          cd cmd/dilithium-wallet
+          wails build -platform darwin/universal
+
+      - name: Create DMG
+        run: |
+          APP_PATH="cmd/dilithium-wallet/build/bin/dilithium-wallet.app"
+          DMG_NAME="Dilithium-Wallet-macOS.dmg"
+
+          # Create a temporary directory for DMG contents
+          mkdir -p dmg-staging
+          cp -R "$APP_PATH" dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+
+          # Create DMG
+          hdiutil create -volname "Dilithium Wallet" \
+            -srcfolder dmg-staging \
+            -ov -format UDZO \
+            "dist/${DMG_NAME}"
+
+      - name: Upload macOS wallet
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-macos
+          path: dist/Dilithium-Wallet-macOS.dmg
+
+  wallet-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install WebView2
+        run: |
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "MicrosoftEdgeWebview2Setup.exe"
+          Start-Process -FilePath "MicrosoftEdgeWebview2Setup.exe" -Args "/silent /install" -Wait
+
+      - name: Install frontend dependencies
+        run: cd cmd/dilithium-wallet/frontend && npm install
+
+      - name: Build wallet app
+        run: |
+          cd cmd/dilithium-wallet
+          wails build -nsis
+
+      - name: Copy artifacts
+        run: |
+          mkdir dist
+          cp cmd/dilithium-wallet/build/bin/dilithium-wallet.exe dist/Dilithium-Wallet-Windows.exe
+          if (Test-Path "cmd/dilithium-wallet/build/bin/dilithium-wallet-amd64-installer.exe") {
+            cp cmd/dilithium-wallet/build/bin/dilithium-wallet-amd64-installer.exe dist/Dilithium-Wallet-Windows-Installer.exe
+          }
+
+      - name: Upload Windows wallet
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-windows
+          path: dist/Dilithium-Wallet-Windows*.exe
+
+  wallet-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install frontend dependencies
+        run: cd cmd/dilithium-wallet/frontend && npm install
+
+      - name: Build wallet app
+        run: |
+          cd cmd/dilithium-wallet
+          wails build
+
+      - name: Copy artifact
+        run: |
+          mkdir -p dist
+          cp cmd/dilithium-wallet/build/bin/dilithium-wallet dist/Dilithium-Wallet-Linux-amd64
+          chmod +x dist/Dilithium-Wallet-Linux-amd64
+
+      - name: Upload Linux wallet
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallet-linux
+          path: dist/Dilithium-Wallet-Linux-amd64
+
+  # ── Collect all artifacts and publish GitHub Release ──
+  publish:
+    needs: [release, wallet-macos, wallet-windows, wallet-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect into dist
+        run: |
+          mkdir -p dist
+          cp artifacts/core-binaries/* dist/
+          cp artifacts/wallet-macos/* dist/
+          cp artifacts/wallet-windows/* dist/
+          cp artifacts/wallet-linux/* dist/
+
+          # Regenerate checksums with wallet files included
+          cd dist
+          rm -f checksums-sha256.txt
+          sha256sum * > checksums-sha256.txt
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -75,7 +245,17 @@ jobs:
           body: |
             ## Dilithium ${{ github.ref_name }}
 
-            ### Downloads
+            ### Wallet (Desktop App)
+
+            | Platform | Download |
+            |----------|----------|
+            | macOS (Universal) | `Dilithium-Wallet-macOS.dmg` |
+            | Windows | `Dilithium-Wallet-Windows.exe` |
+            | Linux x86_64 | `Dilithium-Wallet-Linux-amd64` |
+
+            > The wallet works standalone — no node required. It connects to the public Dilithium network automatically.
+
+            ### Node / CLI / Miner
 
             | Platform | Node | CLI | Miner |
             |----------|------|-----|-------|

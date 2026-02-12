@@ -231,10 +231,11 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 				"active":   isMining,
 				"address":  minerAddr,
 			},
-			"difficulty":      n.Blockchain.GetCurrentDifficulty(),
-			"difficulty_bits": n.Blockchain.GetCurrentDifficultyBits(),
-			"valid":      n.Blockchain.IsValid(),
-			"uptime":     time.Now().Unix(),
+			"difficulty":       n.Blockchain.GetCurrentDifficulty(),
+			"difficulty_bits":  n.Blockchain.GetCurrentDifficultyBits(),
+			"last_block_hash":  n.Blockchain.GetLastBlock().Hash,
+			"valid":            n.Blockchain.IsValid(),
+			"uptime":           time.Now().Unix(),
 		},
 	})
 }

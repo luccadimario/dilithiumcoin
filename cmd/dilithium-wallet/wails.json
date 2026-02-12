@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "dilithium-wallet",
+  "outputfilename": "dilithium-wallet",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Dilithium",
+    "email": "dev@dilithiumcoin.com"
+  }
+}
