@@ -671,7 +671,9 @@ func (bc *Blockchain) recalcLegacyDifficulty(height int) {
 	}
 
 	expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
-	currentBits := bc.DifficultyBits
+	// Use the difficulty from the block before the adjustment boundary,
+	// not bc.DifficultyBits which may have been set from a later anchor block during sync
+	currentBits := endBlock.getEffectiveDifficultyBits()
 
 	ratio := float64(expectedTime) / float64(actualTime)
 	if ratio > MaxAdjustmentFactor {
@@ -704,7 +706,9 @@ func (bc *Blockchain) recalcLegacyDifficulty(height int) {
 
 // recalcLWMADifficulty uses the post-fork LWMA algorithm
 func (bc *Blockchain) recalcLWMADifficulty(height int) {
-	currentBits := bc.DifficultyBits
+	// Use the previous block's difficulty as baseline, not bc.DifficultyBits
+	// which may have been set from a later anchor block during sync
+	currentBits := bc.Blocks[height-1].getEffectiveDifficultyBits()
 
 	var weightedSum int64
 	var totalWeight int64

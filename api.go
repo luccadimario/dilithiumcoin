@@ -626,26 +626,13 @@ func (n *Node) handleGetMempool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	txs := n.Blockchain.GetPendingTransactions()
-	txDisplay := make([]map[string]interface{}, 0, len(txs))
-
-	for _, tx := range txs {
-		txDisplay = append(txDisplay, map[string]interface{}{
-			"from":       tx.From,
-			"to":         tx.To,
-			"amount":     tx.Amount,
-			"amount_dlt": FormatDLT(tx.Amount),
-			"timestamp":  tx.Timestamp,
-			"signature":  truncateString(tx.Signature, 32),
-			"public_key": tx.PublicKey,
-		})
-	}
 
 	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Mempool retrieved",
 		Data: map[string]interface{}{
 			"count":        len(txs),
-			"transactions": txDisplay,
+			"transactions": txs,
 		},
 	})
 }
