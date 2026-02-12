@@ -261,27 +261,22 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 	expectedBits := n.Blockchain.GetCurrentDifficultyBitsLocked()
 	expectedHex := difficultyBitsToHexDigits(expectedBits)
 
-	// Verify proof of work
+	// All blocks must meet bit-based PoW target regardless of version
+	if !meetsDifficultyBits(block.Hash, expectedBits) {
+		fmt.Printf("Block #%d does not meet difficulty target (%d bits required)\n", block.Index, expectedBits)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
 	if block.DifficultyBits > 0 {
 		if block.DifficultyBits != expectedBits {
 			fmt.Printf("Block #%d has wrong difficulty bits %d (expected %d)\n", block.Index, block.DifficultyBits, expectedBits)
 			n.Blockchain.mutex.Unlock()
 			return
 		}
-		if !meetsDifficultyBits(block.Hash, block.DifficultyBits) {
-			fmt.Printf("Block #%d has invalid bit-based proof of work (bits=%d)\n", block.Index, block.DifficultyBits)
-			n.Blockchain.mutex.Unlock()
-			return
-		}
 	} else {
 		if block.Difficulty != expectedHex {
 			fmt.Printf("Block #%d has wrong difficulty %d (expected %d)\n", block.Index, block.Difficulty, expectedHex)
-			n.Blockchain.mutex.Unlock()
-			return
-		}
-		target := createTarget(block.Difficulty)
-		if len(block.Hash) < block.Difficulty || block.Hash[:block.Difficulty] != target {
-			fmt.Printf("Block #%d has invalid proof of work\n", block.Index)
 			n.Blockchain.mutex.Unlock()
 			return
 		}

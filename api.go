@@ -326,8 +326,16 @@ func (n *Node) handleBlockSubmit(w http.ResponseWriter, r *http.Request) {
 	expectedBits := n.Blockchain.GetCurrentDifficultyBitsLocked()
 	expectedHex := difficultyBitsToHexDigits(expectedBits)
 
+	// All blocks must meet bit-based PoW target regardless of version
+	if !meetsDifficultyBits(block.Hash, expectedBits) {
+		n.Blockchain.mutex.Unlock()
+		respondError(w, http.StatusBadRequest, fmt.Sprintf(
+			"Block does not meet difficulty target (%d bits required)", expectedBits))
+		return
+	}
+
 	if block.DifficultyBits > 0 {
-		// Bit-based block — validate DifficultyBits matches expected
+		// Bit-based block — validate DifficultyBits field matches expected
 		if block.DifficultyBits != expectedBits {
 			n.Blockchain.mutex.Unlock()
 			respondError(w, http.StatusBadRequest, fmt.Sprintf(
@@ -335,25 +343,13 @@ func (n *Node) handleBlockSubmit(w http.ResponseWriter, r *http.Request) {
 				block.DifficultyBits, expectedBits))
 			return
 		}
-		// Verify proof of work with bit-based target
-		if !meetsDifficultyBits(block.Hash, block.DifficultyBits) {
-			n.Blockchain.mutex.Unlock()
-			respondError(w, http.StatusBadRequest, "Block does not meet bit-based difficulty target")
-			return
-		}
 	} else {
-		// Legacy block — validate hex-digit difficulty
+		// Legacy block — also check hex-digit difficulty is reasonable
 		if block.Difficulty != expectedHex {
 			n.Blockchain.mutex.Unlock()
 			respondError(w, http.StatusBadRequest, fmt.Sprintf(
 				"Block difficulty %d does not match expected difficulty %d",
 				block.Difficulty, expectedHex))
-			return
-		}
-		target := createTarget(block.Difficulty)
-		if len(block.Hash) < block.Difficulty || block.Hash[:block.Difficulty] != target {
-			n.Blockchain.mutex.Unlock()
-			respondError(w, http.StatusBadRequest, "Block does not meet difficulty target")
 			return
 		}
 	}
