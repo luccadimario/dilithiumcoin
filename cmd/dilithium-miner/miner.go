@@ -3,11 +3,12 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,10 +45,10 @@ type Miner struct {
 
 // BlockTemplate holds the data needed to mine a block
 type BlockTemplate struct {
-	Index        int    `json:"Index"`
+	Index        int64  `json:"Index"`
 	PreviousHash string `json:"PreviousHash"`
 	Difficulty   int    `json:"difficulty"`
-	Height       int    `json:"blockchain_height"`
+	Height       int64  `json:"blockchain_height"`
 	Reward       int64  `json:"block_reward"`
 }
 
@@ -63,7 +64,7 @@ type Transaction struct {
 
 // Block represents a mined block to submit
 type Block struct {
-	Index        int            `json:"Index"`
+	Index        int64          `json:"Index"`
 	Timestamp    int64          `json:"Timestamp"`
 	Transactions []*Transaction `json:"transactions"`
 	PreviousHash string         `json:"PreviousHash"`
@@ -170,7 +171,7 @@ func (m *Miner) getWork() (*BlockTemplate, error) {
 		return nil, fmt.Errorf("node error: %s", apiResp.Message)
 	}
 
-	height := int(apiResp.Data["blockchain_height"].(float64))
+	height := int64(apiResp.Data["blockchain_height"].(float64))
 	difficulty := int(apiResp.Data["difficulty"].(float64))
 
 	// Get the last block hash from the chain
@@ -200,7 +201,7 @@ func (m *Miner) getWork() (*BlockTemplate, error) {
 
 	// Calculate block reward
 	var reward int64 = 50 * DLTUnit // Default initial reward
-	halvings := height / 250000
+	halvings := int(height) / 250000
 	for i := 0; i < halvings; i++ {
 		reward /= 2
 	}
@@ -293,11 +294,6 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 		Difficulty:   template.Difficulty,
 	}
 
-	// Create target
-	target := new(big.Int)
-	target.SetBit(target, 256-template.Difficulty*4, 1)
-	target.Sub(target, big.NewInt(1))
-
 	// Mine with cancellation
 	var nonce int64
 	hashPrefix := strings.Repeat("0", template.Difficulty)
@@ -342,7 +338,7 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 }
 
 // chainAdvanced checks if the chain has moved past our template height
-func (m *Miner) chainAdvanced(templateHeight int) bool {
+func (m *Miner) chainAdvanced(templateHeight int64) bool {
 	resp, err := httpClient.Get(m.nodeURL + "/status")
 	if err != nil {
 		return false
@@ -363,19 +359,24 @@ func (m *Miner) chainAdvanced(templateHeight int) bool {
 		return false
 	}
 
-	currentHeight := int(apiResp.Data["blockchain_height"].(float64))
+	currentHeight := int64(apiResp.Data["blockchain_height"].(float64))
 	return currentHeight > templateHeight
 }
 
 // calculateBlockHash computes the SHA-256 hash of a block
+// Must match the node's Block.CalculateHash() exactly
 func calculateBlockHash(block *Block) string {
-	txHashes := ""
-	for _, tx := range block.Transactions {
-		txHashes += fmt.Sprintf("%s%s%d%d%s", tx.From, tx.To, tx.Amount, tx.Timestamp, tx.Signature)
-	}
-	record := fmt.Sprintf("%d%d%s%s%d%d", block.Index, block.Timestamp, txHashes, block.PreviousHash, block.Nonce, block.Difficulty)
-	h := sha256.Sum256([]byte(record))
-	return fmt.Sprintf("%x", h)
+	txJSON, _ := json.Marshal(block.Transactions)
+
+	blockData := strconv.FormatInt(block.Index, 10) +
+		strconv.FormatInt(block.Timestamp, 10) +
+		string(txJSON) +
+		block.PreviousHash +
+		strconv.FormatInt(block.Nonce, 10) +
+		strconv.Itoa(block.Difficulty)
+
+	hash := sha256.Sum256([]byte(blockData))
+	return hex.EncodeToString(hash[:])
 }
 
 // submitBlock posts a mined block to the node
