@@ -567,23 +567,15 @@ func (n *Node) isBlockValid(currentBlock, previousBlock *Block) bool {
 		return false
 	}
 
-	// Verify proof of work
-	if currentBlock.DifficultyBits > 0 {
-		// New bit-based validation
-		if !meetsDifficultyBits(currentBlock.Hash, currentBlock.DifficultyBits) {
-			fmt.Printf("Block %d fails bit-based PoW (bits=%d)\n", currentBlock.Index, currentBlock.DifficultyBits)
-			return false
-		}
-	} else {
-		// Legacy hex-digit validation
-		blockDifficulty := currentBlock.Difficulty
-		if blockDifficulty == 0 {
-			blockDifficulty = n.Blockchain.Difficulty
-		}
-		target := createTarget(blockDifficulty)
-		if len(currentBlock.Hash) < blockDifficulty || currentBlock.Hash[:blockDifficulty] != target {
-			return false
-		}
+	// Verify proof of work — every block must meet at least MinDifficultyBits
+	// This prevents accepting chains with artificially low difficulty
+	effectiveBits := currentBlock.getEffectiveDifficultyBits()
+	if effectiveBits < MinDifficultyBits {
+		effectiveBits = MinDifficultyBits
+	}
+	if !meetsDifficultyBits(currentBlock.Hash, effectiveBits) {
+		fmt.Printf("Block %d fails PoW check (required %d bits)\n", currentBlock.Index, effectiveBits)
+		return false
 	}
 
 	return true
