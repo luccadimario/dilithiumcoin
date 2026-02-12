@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -15,16 +16,25 @@ type APIResponse struct {
 }
 
 // StartAPI starts the HTTP server for the node
-func (n *Node) StartAPI(apiPort string) {
+func (n *Node) StartAPI(apiHost, apiPort string) {
 	mux := http.NewServeMux()
 
 	// Register all routes
 	n.registerRoutes(mux)
 
-	apiAddr := "0.0.0.0:" + apiPort
-	n.printAPIInfo(apiPort)
+	apiAddr := apiHost + ":" + apiPort
+	n.printAPIInfo(apiHost, apiPort)
 
-	if err := http.ListenAndServe(apiAddr, corsMiddleware(mux)); err != nil {
+	// Use http.Server with timeouts (shannon #18)
+	server := &http.Server{
+		Addr:         apiAddr,
+		Handler:      corsMiddleware(mux),
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
 		fmt.Printf("API error: %v\n", err)
 	}
 }
@@ -32,9 +42,18 @@ func (n *Node) StartAPI(apiPort string) {
 // corsMiddleware adds CORS headers to responses
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := "*"
-		// Could be made configurable via CORSOrigin config field
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		// Restrict CORS to known origins (shannon #2)
+		origin := r.Header.Get("Origin")
+		allowedOrigins := map[string]bool{
+			"https://dilithiumcoin.com":     true,
+			"https://www.dilithiumcoin.com": true,
+			"http://localhost:3000":          true,
+			"http://localhost:3001":          true,
+		}
+		if allowedOrigins[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		// Always allow same-origin requests (no Origin header)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
@@ -86,8 +105,8 @@ func (n *Node) registerRoutes(mux *http.ServeMux) {
 }
 
 // printAPIInfo prints API endpoint information
-func (n *Node) printAPIInfo(apiPort string) {
-	fmt.Printf("API listening on 0.0.0.0:%s\n", apiPort)
+func (n *Node) printAPIInfo(apiHost, apiPort string) {
+	fmt.Printf("API listening on %s:%s\n", apiHost, apiPort)
 	fmt.Println("API Endpoints:")
 	fmt.Printf("  GET  /status              - Node status\n")
 	fmt.Printf("  GET  /version             - Version info\n")
@@ -198,7 +217,8 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 				"active":   isMining,
 				"address":  minerAddr,
 			},
-			"difficulty": n.Blockchain.GetCurrentDifficulty(),
+			"difficulty":      n.Blockchain.GetCurrentDifficulty(),
+			"difficulty_bits": n.Blockchain.GetCurrentDifficultyBits(),
 			"valid":      n.Blockchain.IsValid(),
 			"uptime":     time.Now().Unix(),
 		},
@@ -238,8 +258,12 @@ func (n *Node) handleGetBlock(w http.ResponseWriter, r *http.Request) {
 	// Try by index first
 	indexStr := r.URL.Query().Get("index")
 	if indexStr != "" {
-		var index int64
-		fmt.Sscanf(indexStr, "%d", &index)
+		// Use strconv.ParseInt instead of fmt.Sscanf (shannon #15)
+		index, err := strconv.ParseInt(indexStr, 10, 64)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid index parameter")
+			return
+		}
 		block := n.Blockchain.GetBlockByIndex(index)
 		if block == nil {
 			respondError(w, http.StatusNotFound, "Block not found")
@@ -279,6 +303,9 @@ func (n *Node) handleBlockSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit request body size to 1MB for block submissions (shannon #3)
+	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
+
 	var block Block
 	if err := json.NewDecoder(r.Body).Decode(&block); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid block data")
@@ -291,27 +318,44 @@ func (n *Node) handleBlockSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the block's difficulty matches what we expect
-	expectedDifficulty := n.Blockchain.GetCurrentDifficulty()
-	if block.Difficulty != expectedDifficulty {
-		respondError(w, http.StatusBadRequest, fmt.Sprintf(
-			"Block difficulty %d does not match expected difficulty %d",
-			block.Difficulty, expectedDifficulty))
-		return
-	}
-
-	// Verify proof of work meets the expected difficulty
-	if block.Difficulty == 0 {
-		respondError(w, http.StatusBadRequest, "Block missing difficulty")
-		return
-	}
-	target := createTarget(block.Difficulty)
-	if len(block.Hash) < block.Difficulty || block.Hash[:block.Difficulty] != target {
-		respondError(w, http.StatusBadRequest, "Block does not meet difficulty target")
-		return
-	}
-
+	// Acquire mutex BEFORE difficulty validation to avoid race condition (shannon #10)
 	n.Blockchain.mutex.Lock()
+
+	// Verify difficulty matches expected (bit-based or legacy)
+	expectedBits := n.Blockchain.GetCurrentDifficultyBitsLocked()
+	expectedHex := difficultyBitsToHexDigits(expectedBits)
+
+	if block.DifficultyBits > 0 {
+		// Bit-based block — validate DifficultyBits matches expected
+		if block.DifficultyBits != expectedBits {
+			n.Blockchain.mutex.Unlock()
+			respondError(w, http.StatusBadRequest, fmt.Sprintf(
+				"Block difficulty bits %d does not match expected %d",
+				block.DifficultyBits, expectedBits))
+			return
+		}
+		// Verify proof of work with bit-based target
+		if !meetsDifficultyBits(block.Hash, block.DifficultyBits) {
+			n.Blockchain.mutex.Unlock()
+			respondError(w, http.StatusBadRequest, "Block does not meet bit-based difficulty target")
+			return
+		}
+	} else {
+		// Legacy block — validate hex-digit difficulty
+		if block.Difficulty != expectedHex {
+			n.Blockchain.mutex.Unlock()
+			respondError(w, http.StatusBadRequest, fmt.Sprintf(
+				"Block difficulty %d does not match expected difficulty %d",
+				block.Difficulty, expectedHex))
+			return
+		}
+		target := createTarget(block.Difficulty)
+		if len(block.Hash) < block.Difficulty || block.Hash[:block.Difficulty] != target {
+			n.Blockchain.mutex.Unlock()
+			respondError(w, http.StatusBadRequest, "Block does not meet difficulty target")
+			return
+		}
+	}
 
 	// Verify block connects to our chain
 	lastBlock := n.Blockchain.Blocks[len(n.Blockchain.Blocks)-1]
@@ -324,6 +368,20 @@ func (n *Node) handleBlockSubmit(w http.ResponseWriter, r *http.Request) {
 	if block.Index != lastBlock.Index+1 {
 		n.Blockchain.mutex.Unlock()
 		respondError(w, http.StatusBadRequest, "Invalid block index")
+		return
+	}
+
+	// Validate block timestamp (shannon #12)
+	now := time.Now().Unix()
+	maxFutureTime := now + 2*60*60 // 2 hours in the future
+	if block.Timestamp > maxFutureTime {
+		n.Blockchain.mutex.Unlock()
+		respondError(w, http.StatusBadRequest, "Block timestamp too far in the future")
+		return
+	}
+	if block.Timestamp < lastBlock.Timestamp {
+		n.Blockchain.mutex.Unlock()
+		respondError(w, http.StatusBadRequest, "Block timestamp is before previous block")
 		return
 	}
 
@@ -444,6 +502,9 @@ func (n *Node) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
 
 // handleAddTransaction receives and adds signed transactions to mempool
 func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
+	// Limit request body size (shannon #3)
+	r.Body = http.MaxBytesReader(w, r.Body, 100*1024) // 100KB max for transactions
+
 	var req struct {
 		From      string `json:"from"`
 		To        string `json:"to"`
@@ -530,6 +591,7 @@ func (n *Node) handleGetMempool(w http.ResponseWriter, r *http.Request) {
 			"amount_dlt": FormatDLT(tx.Amount),
 			"timestamp":  tx.Timestamp,
 			"signature":  truncateString(tx.Signature, 32),
+			"public_key": tx.PublicKey,
 		})
 	}
 

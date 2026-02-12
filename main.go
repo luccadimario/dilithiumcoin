@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -26,6 +27,7 @@ func main() {
 	config := DefaultConfig()
 	config.P2PPort = flags.Port
 	config.API.Port = flags.APIPort
+	config.API.Host = flags.APIAddr
 	config.Chain.DefaultDifficulty = flags.Difficulty
 	config.MinerAddress = flags.Miner
 	config.AutoMine = flags.AutoMine
@@ -90,7 +92,7 @@ func main() {
 
 	// Start API server
 	if config.API.Enabled {
-		go node.StartAPI(config.API.Port)
+		go node.StartAPI(config.API.Host, config.API.Port)
 	}
 
 	// Setup UPnP port forwarding
@@ -138,6 +140,7 @@ type Flags struct {
 	Difficulty int
 	Connect    string
 	APIPort    string
+	APIAddr    string
 	Version    bool
 	Miner      string
 	AutoMine   bool
@@ -153,6 +156,7 @@ func parseFlags() Flags {
 	flag.IntVar(&flags.Difficulty, "difficulty", 6, "Mining difficulty")
 	flag.StringVar(&flags.Connect, "connect", "", "Initial peer to connect to")
 	flag.StringVar(&flags.APIPort, "api-port", "8001", "HTTP API port")
+	flag.StringVar(&flags.APIAddr, "api-addr", "127.0.0.1", "API listen address (use 0.0.0.0 for all interfaces)")
 	flag.BoolVar(&flags.Version, "version", false, "Show version and exit")
 	flag.StringVar(&flags.Miner, "miner", "", "Miner wallet address for rewards")
 	flag.BoolVar(&flags.AutoMine, "auto-mine", false, "Enable automatic mining")
@@ -274,6 +278,9 @@ func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config 
 // parsePort parses a port string to uint16
 func parsePort(port string) uint16 {
 	var p uint16
-	fmt.Sscanf(port, "%d", &p)
+	// Use strconv instead of fmt.Sscanf (shannon #15)
+	if n, err := strconv.ParseUint(port, 10, 16); err == nil {
+		p = uint16(n)
+	}
 	return p
 }

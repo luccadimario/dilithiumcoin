@@ -14,7 +14,7 @@ import (
 
 const (
 	// Version is the current Dilithium version
-	Version = "3.0.1"
+	Version = "3.0.4"
 
 	// VersionMajor is the major version number
 	VersionMajor = 3
@@ -23,7 +23,7 @@ const (
 	VersionMinor = 0
 
 	// VersionPatch is the patch version number
-	VersionPatch = 3
+	VersionPatch = 4
 
 	// VersionPreRelease is the pre-release identifier (empty for release)
 	VersionPreRelease = ""
@@ -174,7 +174,7 @@ type APIConfig struct {
 func DefaultAPIConfig() *APIConfig {
 	return &APIConfig{
 		Enabled:      true,
-		Host:         "0.0.0.0",
+		Host:         "127.0.0.1",
 		Port:         "8001",
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,

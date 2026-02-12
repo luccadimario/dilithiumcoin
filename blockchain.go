@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -20,17 +21,20 @@ const (
 	// TargetBlockTime is the desired time between blocks in seconds
 	TargetBlockTime = 60 // 1 minute per block
 
-	// MinDifficulty is the minimum allowed difficulty
-	// Prevents difficulty from dropping too low (security measure)
+	// MinDifficulty is the minimum allowed difficulty (hex digits, legacy)
 	MinDifficulty = 4
 
-	// MaxDifficulty - set very high, effectively no cap (like Bitcoin)
-	// Difficulty 20 = 16^20 hashes, practically unreachable
+	// MaxDifficulty is the maximum allowed difficulty (hex digits, legacy)
 	MaxDifficulty = 20
 
+	// MinDifficultyBits is the minimum bit-based difficulty (= MinDifficulty * 4)
+	MinDifficultyBits = 16
+
+	// MaxDifficultyBits is the maximum bit-based difficulty (= MaxDifficulty * 4)
+	MaxDifficultyBits = 80
+
 	// MaxAdjustmentFactor limits how much difficulty can change per adjustment
-	// Bitcoin uses 4x, we use 2x for smoother adjustments
-	MaxAdjustmentFactor = 2.0
+	MaxAdjustmentFactor = 4.0
 
 	// ============================================================================
 	// SUPPLY CONTROL (Bitcoin-like halving)
@@ -61,13 +65,14 @@ var (
 
 // Block represents a single block in the blockchain
 type Block struct {
-	Index        int64
-	Timestamp    int64
-	Transactions []*Transaction `json:"transactions"`
-	PreviousHash string
-	Hash         string
-	Nonce        int64
-	Difficulty   int `json:"difficulty"` // Difficulty used to mine this block
+	Index          int64
+	Timestamp      int64
+	Transactions   []*Transaction `json:"transactions"`
+	PreviousHash   string
+	Hash           string
+	Nonce          int64
+	Difficulty     int `json:"Difficulty"`                    // Leading zero hex digits (backward compat)
+	DifficultyBits int `json:"DifficultyBits,omitempty"` // Bit-precise difficulty (soft fork)
 }
 
 // CalculateHash creates a SHA-256 hash of the block
@@ -85,21 +90,37 @@ func (b *Block) CalculateHash() string {
 	return hex.EncodeToString(hash[:])
 }
 
-// MineBlock performs proof of work by finding a hash with required leading zeros
+// MineBlock performs proof of work
 func (b *Block) MineBlock(difficulty int) bool {
 	return b.MineBlockWithCancel(difficulty, nil)
 }
 
 // MineBlockWithCancel performs proof of work with cancellation support
-// Returns true if mining succeeded, false if cancelled
+// Uses bit-based difficulty if DifficultyBits > 0, otherwise hex-digit difficulty
 func (b *Block) MineBlockWithCancel(difficulty int, cancel <-chan struct{}) bool {
-	target := createTarget(difficulty)
-	fmt.Printf("Mining block %d...\n", b.Index)
+	useBits := b.DifficultyBits > 0
+	fmt.Printf("Mining block %d (difficulty: %d", b.Index, difficulty)
+	if useBits {
+		fmt.Printf(", bits: %d", b.DifficultyBits)
+	}
+	fmt.Println(")...")
 	start := time.Now()
 
 	b.Hash = b.CalculateHash()
 
-	for b.Hash[:difficulty] != target {
+	for {
+		var meets bool
+		if useBits {
+			meets = meetsDifficultyBits(b.Hash, b.DifficultyBits)
+		} else {
+			target := createTarget(difficulty)
+			meets = len(b.Hash) >= difficulty && b.Hash[:difficulty] == target
+		}
+
+		if meets {
+			break
+		}
+
 		// Check for cancellation every 10000 hashes for performance
 		if cancel != nil && b.Nonce%10000 == 0 {
 			select {
@@ -126,7 +147,8 @@ func (b *Block) MineBlockWithCancel(difficulty int, cancel <-chan struct{}) bool
 // Blockchain represents the entire chain with pending transactions
 type Blockchain struct {
 	Blocks              []*Block
-	Difficulty          int
+	Difficulty          int // Legacy hex-digit difficulty
+	DifficultyBits      int // Current bit-based difficulty
 	PendingTransactions []*Transaction
 	Mempool             map[string]*Transaction
 	mutex               sync.RWMutex
@@ -137,6 +159,7 @@ func NewBlockchain(difficulty int) *Blockchain {
 	return &Blockchain{
 		Blocks:              []*Block{createGenesisBlock(difficulty)},
 		Difficulty:          difficulty,
+		DifficultyBits:      hexDigitsToDifficultyBits(difficulty),
 		PendingTransactions: make([]*Transaction, 0),
 		Mempool:             make(map[string]*Transaction),
 	}
@@ -217,24 +240,26 @@ func (bc *Blockchain) MinePendingTransactionsWithCancel(minerAddress string, can
 	txToMine := []*Transaction{rewardTx}
 	txToMine = append(txToMine, bc.PendingTransactions...)
 
-	// Get current difficulty (may have adjusted)
-	difficulty := bc.GetCurrentDifficultyLocked()
+	// Get current difficulty in bits (may have adjusted)
+	diffBits := bc.GetCurrentDifficultyBitsLocked()
+	diffHex := difficultyBitsToHexDigits(diffBits)
 
 	// Create new block with pending transactions
 	previousBlock := bc.Blocks[len(bc.Blocks)-1]
 	newBlock := &Block{
-		Index:        previousBlock.Index + 1,
-		Timestamp:    time.Now().Unix(),
-		Transactions: txToMine,
-		PreviousHash: previousBlock.Hash,
-		Nonce:        0,
-		Difficulty:   difficulty,
+		Index:          previousBlock.Index + 1,
+		Timestamp:      time.Now().Unix(),
+		Transactions:   txToMine,
+		PreviousHash:   previousBlock.Hash,
+		Nonce:          0,
+		Difficulty:     diffHex,
+		DifficultyBits: diffBits,
 	}
 
 	bc.mutex.Unlock()
 
 	// Mine the block (this can be cancelled)
-	if !newBlock.MineBlockWithCancel(difficulty, cancel) {
+	if !newBlock.MineBlockWithCancel(diffHex, cancel) {
 		return nil, false
 	}
 
@@ -345,40 +370,51 @@ func (bc *Blockchain) GetBlockByIndex(index int64) *Block {
 	return nil
 }
 
-// GetCurrentDifficulty calculates the difficulty for the next block
-// Adjusts every BlocksPerAdjustment blocks based on actual vs expected time
+// GetCurrentDifficulty returns the legacy hex-digit difficulty for the next block
 func (bc *Blockchain) GetCurrentDifficulty() int {
-	bc.mutex.RLock()
-	defer bc.mutex.RUnlock()
-	return bc.GetCurrentDifficultyLocked()
+	return difficultyBitsToHexDigits(bc.GetCurrentDifficultyBits())
 }
 
-// GetCurrentDifficultyLocked is like GetCurrentDifficulty but assumes lock is held
+// GetCurrentDifficultyBits returns the bit-based difficulty for the next block
+func (bc *Blockchain) GetCurrentDifficultyBits() int {
+	bc.mutex.RLock()
+	defer bc.mutex.RUnlock()
+	return bc.GetCurrentDifficultyBitsLocked()
+}
+
+// GetCurrentDifficultyLocked returns legacy hex-digit difficulty (assumes lock held)
 func (bc *Blockchain) GetCurrentDifficultyLocked() int {
+	return difficultyBitsToHexDigits(bc.GetCurrentDifficultyBitsLocked())
+}
+
+// GetCurrentDifficultyBitsLocked returns bit-based difficulty (assumes lock held)
+func (bc *Blockchain) GetCurrentDifficultyBitsLocked() int {
 	height := len(bc.Blocks)
 
 	// Use initial difficulty until we have enough blocks
 	if height < BlocksPerAdjustment {
-		return bc.Difficulty
+		return bc.DifficultyBits
 	}
 
 	// Check if we're at an adjustment boundary
 	if height%BlocksPerAdjustment != 0 {
-		// Not at adjustment boundary, use last block's difficulty
-		lastDiff := bc.Blocks[height-1].Difficulty
-		if lastDiff == 0 {
-			return bc.Difficulty // Fallback for old blocks without difficulty
+		// Not at adjustment boundary, use last block's effective difficulty bits
+		lastBlock := bc.Blocks[height-1]
+		bits := lastBlock.getEffectiveDifficultyBits()
+		if bits == 0 {
+			return bc.DifficultyBits
 		}
-		return lastDiff
+		return bits
 	}
 
 	// Calculate difficulty adjustment
-	return bc.calculateNewDifficulty()
+	return bc.calculateNewDifficultyBits()
 }
 
-// calculateNewDifficulty computes new difficulty based on recent block times
-// Must be called with mutex held
-func (bc *Blockchain) calculateNewDifficulty() int {
+// calculateNewDifficultyBits computes new bit-based difficulty from recent block times
+// Each bit step = 2x difficulty change (vs 16x per hex digit). This allows fine-grained
+// convergence to the target block time.
+func (bc *Blockchain) calculateNewDifficultyBits() int {
 	height := len(bc.Blocks)
 
 	// Get the block at the start of the adjustment period
@@ -388,72 +424,73 @@ func (bc *Blockchain) calculateNewDifficulty() int {
 	// Calculate actual time for the last adjustment period
 	actualTime := endBlock.Timestamp - startBlock.Timestamp
 	if actualTime <= 0 {
-		actualTime = 1 // Prevent division by zero
+		actualTime = 1
 	}
 
 	// Expected time for the period
 	expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
 
-	// Current difficulty (from the last block)
-	currentDifficulty := endBlock.Difficulty
-	if currentDifficulty == 0 {
-		currentDifficulty = bc.Difficulty // Fallback for old blocks
+	// Current difficulty in bits (from the last block)
+	currentBits := endBlock.getEffectiveDifficultyBits()
+	if currentBits == 0 {
+		currentBits = bc.DifficultyBits
 	}
 
 	// Calculate adjustment ratio
-	// If blocks are coming too fast (actualTime < expectedTime), increase difficulty
-	// If blocks are coming too slow (actualTime > expectedTime), decrease difficulty
 	ratio := float64(expectedTime) / float64(actualTime)
 
-	// Clamp the ratio to prevent extreme adjustments
+	// Clamp ratio to prevent extreme adjustments
 	if ratio > MaxAdjustmentFactor {
 		ratio = MaxAdjustmentFactor
 	} else if ratio < 1.0/MaxAdjustmentFactor {
 		ratio = 1.0 / MaxAdjustmentFactor
 	}
 
-	// Calculate new difficulty using proportional scaling
-	// Each unit of difficulty is roughly 16x harder (hex digits)
-	// Use log-based scaling: ratio of 16 = +1 difficulty, 1/16 = -1 difficulty
-	var newDifficulty int
-	if ratio > 16.0 {
-		// Way too fast — jump by 2
-		newDifficulty = currentDifficulty + 2
-	} else if ratio > 2.0 {
-		// Too fast — increase by 1
-		newDifficulty = currentDifficulty + 1
-	} else if ratio < 1.0/16.0 {
-		// Way too slow — decrease by 2
-		newDifficulty = currentDifficulty - 2
-	} else if ratio < 0.5 {
-		// Too slow — decrease by 1
-		newDifficulty = currentDifficulty - 1
+	// Use logarithmic scaling: each bit = 2x difficulty
+	// log2(ratio) gives exact number of bits to adjust
+	// ratio=2 → +1 bit, ratio=4 → +2 bits, ratio=0.5 → -1 bit
+	var adjustment int
+	logRatio := math.Log2(ratio)
+	if math.Abs(logRatio) < 0.25 {
+		// Within ~19% of target — no adjustment needed
+		adjustment = 0
 	} else {
-		// Within acceptable range, keep same
-		newDifficulty = currentDifficulty
+		// Round to nearest integer bit adjustment
+		adjustment = int(math.Round(logRatio))
 	}
 
+	newBits := currentBits + adjustment
+
 	// Clamp to min/max
-	if newDifficulty < MinDifficulty {
-		newDifficulty = MinDifficulty
-	} else if newDifficulty > MaxDifficulty {
-		newDifficulty = MaxDifficulty
+	if newBits < MinDifficultyBits {
+		newBits = MinDifficultyBits
+	} else if newBits > MaxDifficultyBits {
+		newBits = MaxDifficultyBits
 	}
 
 	// Log the adjustment
-	if newDifficulty != currentDifficulty {
-		avgBlockTime := float64(actualTime) / float64(BlocksPerAdjustment)
+	avgBlockTime := float64(actualTime) / float64(BlocksPerAdjustment)
+	if newBits != currentBits {
 		fmt.Printf("=== DIFFICULTY ADJUSTMENT ===\n")
 		fmt.Printf("  Block height: %d\n", height)
 		fmt.Printf("  Actual time for %d blocks: %ds (avg %.1fs/block)\n",
 			BlocksPerAdjustment, actualTime, avgBlockTime)
 		fmt.Printf("  Expected time: %ds (target %ds/block)\n",
 			expectedTime, TargetBlockTime)
-		fmt.Printf("  Difficulty: %d -> %d\n", currentDifficulty, newDifficulty)
+		fmt.Printf("  Ratio: %.2f (log2: %.2f)\n", ratio, logRatio)
+		fmt.Printf("  DifficultyBits: %d -> %d (hex digits: %d -> %d)\n",
+			currentBits, newBits,
+			difficultyBitsToHexDigits(currentBits), difficultyBitsToHexDigits(newBits))
 		fmt.Printf("=============================\n")
+	} else {
+		fmt.Printf("Difficulty check at height %d: no change (bits=%d, avg=%.1fs/block)\n",
+			height, currentBits, avgBlockTime)
 	}
 
-	return newDifficulty
+	// Update the blockchain's tracked difficulty
+	bc.DifficultyBits = newBits
+
+	return newBits
 }
 
 // IsValid validates the entire blockchain
@@ -480,15 +517,25 @@ func (bc *Blockchain) isBlockValid(currentBlock, previousBlock *Block) bool {
 		return false
 	}
 
-	// Verify proof of work using the block's own difficulty
-	blockDifficulty := currentBlock.Difficulty
-	if blockDifficulty == 0 {
-		blockDifficulty = bc.Difficulty // Fallback for old blocks
-	}
-	target := createTarget(blockDifficulty)
-	if len(currentBlock.Hash) < blockDifficulty || currentBlock.Hash[:blockDifficulty] != target {
-		fmt.Printf("Block %d has invalid proof of work\n", currentBlock.Index)
-		return false
+	// Verify proof of work
+	if currentBlock.DifficultyBits > 0 {
+		// Bit-based validation
+		if !meetsDifficultyBits(currentBlock.Hash, currentBlock.DifficultyBits) {
+			fmt.Printf("Block %d has invalid bit-based proof of work (bits=%d)\n",
+				currentBlock.Index, currentBlock.DifficultyBits)
+			return false
+		}
+	} else {
+		// Legacy hex-digit validation
+		blockDifficulty := currentBlock.Difficulty
+		if blockDifficulty == 0 {
+			blockDifficulty = bc.Difficulty
+		}
+		target := createTarget(blockDifficulty)
+		if len(currentBlock.Hash) < blockDifficulty || currentBlock.Hash[:blockDifficulty] != target {
+			fmt.Printf("Block %d has invalid proof of work\n", currentBlock.Index)
+			return false
+		}
 	}
 
 	return true
@@ -591,6 +638,53 @@ func createGenesisBlock(difficulty int) *Block {
 	}
 }
 
+// meetsDifficultyBits checks if a hash meets the required number of leading zero BITS.
+// Each bit doubles the difficulty (vs 16x per hex digit). This gives fine-grained control.
+func meetsDifficultyBits(hash string, bits int) bool {
+	if bits <= 0 {
+		return true
+	}
+	hashBytes, err := hex.DecodeString(hash)
+	if err != nil || len(hashBytes) < (bits+7)/8 {
+		return false
+	}
+	// Check full zero bytes
+	fullBytes := bits / 8
+	for i := 0; i < fullBytes; i++ {
+		if hashBytes[i] != 0 {
+			return false
+		}
+	}
+	// Check remaining bits in the next byte
+	remainingBits := bits % 8
+	if remainingBits > 0 {
+		mask := byte(0xFF) << uint(8-remainingBits)
+		if hashBytes[fullBytes]&mask != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// difficultyBitsToHexDigits converts bit-based difficulty to hex-digit difficulty
+func difficultyBitsToHexDigits(bits int) int {
+	return bits / 4
+}
+
+// hexDigitsToDifficultyBits converts hex-digit difficulty to bit-based difficulty
+func hexDigitsToDifficultyBits(hexDigits int) int {
+	return hexDigits * 4
+}
+
+// getEffectiveDifficultyBits returns the bit-based difficulty for a block
+// For legacy blocks (DifficultyBits == 0), converts from hex-digit Difficulty
+func (b *Block) getEffectiveDifficultyBits() int {
+	if b.DifficultyBits > 0 {
+		return b.DifficultyBits
+	}
+	return hexDigitsToDifficultyBits(b.Difficulty)
+}
+
 // createTarget creates a target string with the required number of leading zeros
 func createTarget(difficulty int) string {
 	target := ""
@@ -621,8 +715,9 @@ func VerifyTransactionSignature(tx *Transaction) error {
 		return fmt.Errorf("failed to unmarshal Dilithium public key: %w", err)
 	}
 
-	// Recreate the signed data
-	txData := fmt.Sprintf("%s%s%d%d", tx.From, tx.To, tx.Amount, tx.Timestamp)
+	// Recreate the signed data with chain ID for replay protection (shannon #11)
+	// Try new format first, fall back to legacy for pre-upgrade transactions
+	txData := fmt.Sprintf("%s:%s%s%d%d", NetworkName, tx.From, tx.To, tx.Amount, tx.Timestamp)
 
 	// Decode signature
 	sigBytes, err := hex.DecodeString(tx.Signature)
@@ -630,9 +725,13 @@ func VerifyTransactionSignature(tx *Transaction) error {
 		return fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
-	// Verify signature
+	// Verify signature - try new format with chain ID first
 	if !mode3.Verify(&pk, []byte(txData), sigBytes) {
-		return fmt.Errorf("signature verification failed")
+		// Fallback to legacy format for pre-upgrade transactions
+		legacyTxData := fmt.Sprintf("%s%s%d%d", tx.From, tx.To, tx.Amount, tx.Timestamp)
+		if !mode3.Verify(&pk, []byte(legacyTxData), sigBytes) {
+			return fmt.Errorf("signature verification failed")
+		}
 	}
 
 	return nil
@@ -807,6 +906,17 @@ func (bc *Blockchain) GetSupplyInfo() map[string]interface{} {
 // ValidateBlockTransactions checks if all transactions in a block are valid
 // This includes checking sufficient balances at the point before this block
 func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*Block) error {
+	// Enforce max transactions per block (shannon #13)
+	if len(block.Transactions) > 5000 {
+		return fmt.Errorf("block %d has %d transactions, exceeds max 5000", block.Index, len(block.Transactions))
+	}
+
+	// Enforce max block size (shannon #13)
+	blockJSON, _ := json.Marshal(block)
+	if len(blockJSON) > 1*1024*1024 {
+		return fmt.Errorf("block %d size %d bytes exceeds max 1MB", block.Index, len(blockJSON))
+	}
+
 	// Build balance map from previous blocks
 	balances := make(map[string]int64)
 

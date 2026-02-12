@@ -18,6 +18,31 @@ import (
 // DLTUnit is the number of base units in 1 DLT
 const DLTUnit int64 = 100_000_000
 
+// meetsDifficultyBits checks if a hash meets N leading zero bits
+func meetsDifficultyBits(hash string, bits int) bool {
+	if bits <= 0 {
+		return true
+	}
+	hashBytes, err := hex.DecodeString(hash)
+	if err != nil || len(hashBytes) < (bits+7)/8 {
+		return false
+	}
+	fullBytes := bits / 8
+	for i := 0; i < fullBytes; i++ {
+		if hashBytes[i] != 0 {
+			return false
+		}
+	}
+	remainingBits := bits % 8
+	if remainingBits > 0 {
+		mask := byte(0xFF) << uint(8-remainingBits)
+		if hashBytes[fullBytes]&mask != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // FormatDLT formats base units as a human-readable DLT string
 func FormatDLT(amount int64) string {
 	whole := amount / DLTUnit
@@ -45,11 +70,12 @@ type Miner struct {
 
 // BlockTemplate holds the data needed to mine a block
 type BlockTemplate struct {
-	Index        int64  `json:"Index"`
-	PreviousHash string `json:"PreviousHash"`
-	Difficulty   int    `json:"difficulty"`
-	Height       int64  `json:"blockchain_height"`
-	Reward       int64  `json:"block_reward"`
+	Index          int64  `json:"Index"`
+	PreviousHash   string `json:"PreviousHash"`
+	Difficulty     int    `json:"difficulty"`
+	DifficultyBits int    `json:"difficulty_bits"`
+	Height         int64  `json:"blockchain_height"`
+	Reward         int64  `json:"block_reward"`
 }
 
 // Transaction represents a transaction for block building
@@ -64,13 +90,14 @@ type Transaction struct {
 
 // Block represents a mined block to submit
 type Block struct {
-	Index        int64          `json:"Index"`
-	Timestamp    int64          `json:"Timestamp"`
-	Transactions []*Transaction `json:"transactions"`
-	PreviousHash string         `json:"PreviousHash"`
-	Hash         string         `json:"Hash"`
-	Nonce        int64          `json:"Nonce"`
-	Difficulty   int            `json:"Difficulty"`
+	Index          int64          `json:"Index"`
+	Timestamp      int64          `json:"Timestamp"`
+	Transactions   []*Transaction `json:"transactions"`
+	PreviousHash   string         `json:"PreviousHash"`
+	Hash           string         `json:"Hash"`
+	Nonce          int64          `json:"Nonce"`
+	Difficulty     int            `json:"Difficulty"`
+	DifficultyBits int            `json:"DifficultyBits,omitempty"`
 }
 
 // APIResponse matches the node's response format
@@ -173,6 +200,10 @@ func (m *Miner) getWork() (*BlockTemplate, error) {
 
 	height := int64(apiResp.Data["blockchain_height"].(float64))
 	difficulty := int(apiResp.Data["difficulty"].(float64))
+	difficultyBits := 0
+	if db, ok := apiResp.Data["difficulty_bits"].(float64); ok {
+		difficultyBits = int(db)
+	}
 
 	// Get the last block hash from the chain
 	chainResp, err := httpClient.Get(m.nodeURL + "/chain")
@@ -210,11 +241,12 @@ func (m *Miner) getWork() (*BlockTemplate, error) {
 	}
 
 	return &BlockTemplate{
-		Index:        height,
-		PreviousHash: lastHash,
-		Difficulty:   difficulty,
-		Height:       height,
-		Reward:       reward,
+		Index:          height,
+		PreviousHash:   lastHash,
+		Difficulty:     difficulty,
+		DifficultyBits: difficultyBits,
+		Height:         height,
+		Reward:         reward,
 	}, nil
 }
 
@@ -279,7 +311,7 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 		To:        m.address,
 		Amount:    template.Reward,
 		Timestamp: time.Now().Unix(),
-		Signature: "coinbase",
+		Signature: fmt.Sprintf("coinbase-%d-%d", template.Index, time.Now().UnixNano()),
 	}
 
 	txs := make([]*Transaction, 0, len(pendingTxs)+1)
@@ -287,11 +319,21 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 	txs = append(txs, pendingTxs...)
 
 	block := &Block{
-		Index:        template.Index,
-		Timestamp:    time.Now().Unix(),
-		Transactions: txs,
-		PreviousHash: template.PreviousHash,
-		Difficulty:   template.Difficulty,
+		Index:          template.Index,
+		Timestamp:      time.Now().Unix(),
+		Transactions:   txs,
+		PreviousHash:   template.PreviousHash,
+		Difficulty:     template.Difficulty,
+		DifficultyBits: template.DifficultyBits,
+	}
+
+	useBits := template.DifficultyBits > 0
+	if useBits {
+		fmt.Printf("Mining block #%d (difficulty bits: %d, hex: %d)\n",
+			template.Index, template.DifficultyBits, template.Difficulty)
+	} else {
+		fmt.Printf("Mining block #%d (difficulty: %d)\n",
+			template.Index, template.Difficulty)
 	}
 
 	// Mine with cancellation
@@ -311,7 +353,14 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 		hash := calculateBlockHash(block)
 		localHashes++
 
-		if strings.HasPrefix(hash, hashPrefix) {
+		var meets bool
+		if useBits {
+			meets = meetsDifficultyBits(hash, template.DifficultyBits)
+		} else {
+			meets = strings.HasPrefix(hash, hashPrefix)
+		}
+
+		if meets {
 			block.Hash = hash
 			atomic.AddInt64(&m.totalHashes, localHashes)
 			elapsed := time.Since(startTime).Seconds()

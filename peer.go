@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	crand "crypto/rand"
+	"encoding/binary"
 	"math/rand"
 	"net"
 	"os"
@@ -120,6 +122,16 @@ type Peer struct {
 	sendCh        chan *P2PMessage
 	stopCh        chan struct{}
 	manager       *PeerManager
+}
+
+// cryptoRandUint64 generates a cryptographically secure random uint64 (shannon #14)
+func cryptoRandUint64() uint64 {
+	var buf [8]byte
+	if _, err := crand.Read(buf[:]); err != nil {
+		// Fallback to math/rand if crypto/rand fails (shouldn't happen)
+		return rand.Uint64()
+	}
+	return binary.LittleEndian.Uint64(buf[:])
 }
 
 // NewPeer creates a new peer instance
@@ -279,8 +291,8 @@ func (p *Peer) pingLoop() {
 				return
 			}
 
-			// Send new ping
-			p.PingNonce = rand.Uint64()
+			// Send new ping (use crypto/rand for nonces - shannon #14)
+			p.PingNonce = cryptoRandUint64()
 			p.PingPending = true
 			p.LastPing = time.Now()
 			p.mutex.Unlock()
@@ -377,7 +389,7 @@ func NewPeerManager(node *Node, config *PeerConfig) *PeerManager {
 	return &PeerManager{
 		config:   config,
 		services: SFNodeNetwork,
-		nonce:    rand.Uint64(),
+		nonce:    cryptoRandUint64(),
 		peers:    make(map[string]*Peer),
 		addrBook: make(map[string]*AddrBookEntry),
 		banned:   make(map[string]time.Time),
@@ -1496,7 +1508,7 @@ func (pm *PeerManager) SavePeerDatabase(path string) error {
 		return fmt.Errorf("failed to marshal peer database: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil { // (shannon #20)
 		return fmt.Errorf("failed to write peer database: %w", err)
 	}
 

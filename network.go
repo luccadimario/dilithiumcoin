@@ -4,10 +4,22 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"sync"
 	"time"
 )
+
+// cumulativeWork calculates total proof-of-work for a chain (shannon #7)
+// Each block contributes 2^difficultyBits of work
+func cumulativeWork(chain []*Block) float64 {
+	var total float64
+	for _, b := range chain {
+		bits := b.getEffectiveDifficultyBits()
+		total += math.Pow(2, float64(bits))
+	}
+	return total
+}
 
 // ============================================================================
 // MESSAGE
@@ -245,14 +257,45 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 		return
 	}
 
-	// Verify proof of work using the block's own difficulty
-	blockDifficulty := block.Difficulty
-	if blockDifficulty == 0 {
-		blockDifficulty = n.Blockchain.Difficulty // Fallback for legacy blocks
+	// Validate block difficulty matches chain rules (shannon #8)
+	expectedBits := n.Blockchain.GetCurrentDifficultyBitsLocked()
+	expectedHex := difficultyBitsToHexDigits(expectedBits)
+
+	// Verify proof of work
+	if block.DifficultyBits > 0 {
+		if block.DifficultyBits != expectedBits {
+			fmt.Printf("Block #%d has wrong difficulty bits %d (expected %d)\n", block.Index, block.DifficultyBits, expectedBits)
+			n.Blockchain.mutex.Unlock()
+			return
+		}
+		if !meetsDifficultyBits(block.Hash, block.DifficultyBits) {
+			fmt.Printf("Block #%d has invalid bit-based proof of work (bits=%d)\n", block.Index, block.DifficultyBits)
+			n.Blockchain.mutex.Unlock()
+			return
+		}
+	} else {
+		if block.Difficulty != expectedHex {
+			fmt.Printf("Block #%d has wrong difficulty %d (expected %d)\n", block.Index, block.Difficulty, expectedHex)
+			n.Blockchain.mutex.Unlock()
+			return
+		}
+		target := createTarget(block.Difficulty)
+		if len(block.Hash) < block.Difficulty || block.Hash[:block.Difficulty] != target {
+			fmt.Printf("Block #%d has invalid proof of work\n", block.Index)
+			n.Blockchain.mutex.Unlock()
+			return
+		}
 	}
-	target := createTarget(blockDifficulty)
-	if len(block.Hash) < blockDifficulty || block.Hash[:blockDifficulty] != target {
-		fmt.Printf("Block #%d has invalid proof of work\n", block.Index)
+
+	// Validate block timestamp (shannon #12)
+	now := time.Now().Unix()
+	if block.Timestamp > now+2*60*60 {
+		fmt.Printf("Block #%d timestamp too far in the future\n", block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+	if block.Timestamp < lastBlock.Timestamp {
+		fmt.Printf("Block #%d timestamp before previous block\n", block.Index)
 		n.Blockchain.mutex.Unlock()
 		return
 	}
@@ -302,8 +345,8 @@ func (n *Node) handleChainMessage(msg Message, peerAddr string) {
 	n.Blockchain.mutex.Lock()
 	defer n.Blockchain.mutex.Unlock()
 
-	// If their chain is longer and valid, replace ours entirely
-	if len(chain) > len(n.Blockchain.Blocks) && n.isValidChain(chain) {
+	// Use cumulative work (not just length) for chain selection (shannon #7)
+	if cumulativeWork(chain) > cumulativeWork(n.Blockchain.Blocks) && n.isValidChain(chain) {
 		fmt.Printf("Syncing blockchain from %s (length: %d -> %d)\n", peerAddr, len(n.Blockchain.Blocks), len(chain))
 
 		// Cancel current mining - chain is being replaced
@@ -528,14 +571,23 @@ func (n *Node) isBlockValid(currentBlock, previousBlock *Block) bool {
 		return false
 	}
 
-	// Verify proof of work using the block's own difficulty
-	blockDifficulty := currentBlock.Difficulty
-	if blockDifficulty == 0 {
-		blockDifficulty = n.Blockchain.Difficulty // Fallback for legacy blocks
-	}
-	target := createTarget(blockDifficulty)
-	if len(currentBlock.Hash) < blockDifficulty || currentBlock.Hash[:blockDifficulty] != target {
-		return false
+	// Verify proof of work
+	if currentBlock.DifficultyBits > 0 {
+		// New bit-based validation
+		if !meetsDifficultyBits(currentBlock.Hash, currentBlock.DifficultyBits) {
+			fmt.Printf("Block %d fails bit-based PoW (bits=%d)\n", currentBlock.Index, currentBlock.DifficultyBits)
+			return false
+		}
+	} else {
+		// Legacy hex-digit validation
+		blockDifficulty := currentBlock.Difficulty
+		if blockDifficulty == 0 {
+			blockDifficulty = n.Blockchain.Difficulty
+		}
+		target := createTarget(blockDifficulty)
+		if len(currentBlock.Hash) < blockDifficulty || currentBlock.Hash[:blockDifficulty] != target {
+			return false
+		}
 	}
 
 	return true

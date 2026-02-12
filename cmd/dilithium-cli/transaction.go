@@ -89,7 +89,7 @@ func cmdSend(args []string) {
 
 	// Create and sign transaction
 	timestamp := time.Now().Unix()
-	txData := fmt.Sprintf("%s%s%d%d", fromAddress, toAddress, amount, timestamp)
+	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d", fromAddress, toAddress, amount, timestamp)
 
 	// Dilithium signs the raw message directly
 	sig := make([]byte, mode3.SignatureSize)
@@ -203,7 +203,7 @@ func cmdSignTransaction(args []string) {
 
 	// Create and sign transaction
 	timestamp := time.Now().Unix()
-	txData := fmt.Sprintf("%s%s%d%d", *from, *to, amount, timestamp)
+	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d", *from, *to, amount, timestamp)
 
 	// Dilithium signs the raw message directly
 	sig := make([]byte, mode3.SignatureSize)

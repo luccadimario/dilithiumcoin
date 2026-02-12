@@ -78,8 +78,8 @@ func NewTransaction(from string, to string, amount int64) *Transaction {
 
 // Sign signs the transaction with a wallet
 func (t *Transaction) Sign(wallet *Wallet) error {
-	// Create transaction data string (without signature)
-	txData := fmt.Sprintf("%s%s%d%d", t.From, t.To, t.Amount, t.Timestamp)
+	// Create transaction data string with chain ID for replay protection (shannon #11)
+	txData := fmt.Sprintf("%s:%s%s%d%d", NetworkName, t.From, t.To, t.Amount, t.Timestamp)
 
 	// Sign the transaction
 	signature, err := wallet.SignTransaction(txData)
