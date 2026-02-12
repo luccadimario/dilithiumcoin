@@ -509,57 +509,87 @@ func (bc *Blockchain) recalcDifficultyFromChain() {
 		return
 	}
 
-	// Use the last block's effective difficulty as baseline
-	lastBlock := bc.Blocks[height-1]
-	currentBits := lastBlock.getEffectiveDifficultyBits()
-	if currentBits == 0 {
-		currentBits = hexDigitsToDifficultyBits(bc.Difficulty)
+	// Find the most recent block with DifficultyBits set (from v3.0.9+ miners)
+	// This serves as a reliable anchor for the accumulated difficulty state
+	anchorBits := 0
+	anchorHeight := 0
+	for i := height - 1; i >= 0; i-- {
+		if bc.Blocks[i].DifficultyBits > 0 {
+			if bc.Blocks[i].DifficultyBits > anchorBits {
+				anchorBits = bc.Blocks[i].DifficultyBits
+				anchorHeight = i
+			}
+			// Only scan recent blocks (last 500) to find anchor
+			if height-1-i > 500 {
+				break
+			}
+		}
 	}
 
-	// Find the last complete adjustment period
-	lastBoundary := (height / BlocksPerAdjustment) * BlocksPerAdjustment
-	if lastBoundary < BlocksPerAdjustment {
-		bc.DifficultyBits = currentBits
-		return
-	}
+	// Determine baseline and starting period for replay
+	var currentBits int
+	var startPeriod int
+	lastPeriod := height / BlocksPerAdjustment
 
-	// Calculate adjustment from the last period's block times
-	startBlock := bc.Blocks[lastBoundary-BlocksPerAdjustment]
-	endBlock := bc.Blocks[lastBoundary-1]
-
-	actualTime := endBlock.Timestamp - startBlock.Timestamp
-	if actualTime <= 0 {
-		actualTime = 1
-	}
-	expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
-
-	ratio := float64(expectedTime) / float64(actualTime)
-	if ratio > MaxAdjustmentFactor {
-		ratio = MaxAdjustmentFactor
-	} else if ratio < 1.0/MaxAdjustmentFactor {
-		ratio = 1.0 / MaxAdjustmentFactor
-	}
-
-	logRatio := math.Log2(ratio)
-	var adjustment int
-	if math.Abs(logRatio) < 0.25 {
-		adjustment = 0
+	if anchorBits > 0 {
+		// Use the anchor block's difficulty as baseline
+		currentBits = anchorBits
+		// Replay from the period AFTER the anchor's period
+		startPeriod = (anchorHeight / BlocksPerAdjustment) + 1
 	} else {
-		adjustment = int(math.Round(logRatio))
+		// No v3.0.9 blocks found — use initial difficulty as baseline
+		// and replay the last few periods to catch up
+		currentBits = MinDifficultyBits
+		startPeriod = lastPeriod - 5
+		if startPeriod < 1 {
+			startPeriod = 1
+		}
 	}
 
-	newBits := currentBits + adjustment
-	if newBits < MinDifficultyBits {
-		newBits = MinDifficultyBits
-	} else if newBits > MaxDifficultyBits {
-		newBits = MaxDifficultyBits
+	// Replay each adjustment period, carrying accumulated difficulty forward
+	for period := startPeriod; period <= lastPeriod; period++ {
+		boundaryHeight := period * BlocksPerAdjustment
+		if boundaryHeight >= height || boundaryHeight < BlocksPerAdjustment {
+			continue
+		}
+
+		startBlock := bc.Blocks[boundaryHeight-BlocksPerAdjustment]
+		endBlock := bc.Blocks[boundaryHeight-1]
+
+		actualTime := endBlock.Timestamp - startBlock.Timestamp
+		if actualTime <= 0 {
+			actualTime = 1
+		}
+		expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
+
+		ratio := float64(expectedTime) / float64(actualTime)
+		if ratio > MaxAdjustmentFactor {
+			ratio = MaxAdjustmentFactor
+		} else if ratio < 1.0/MaxAdjustmentFactor {
+			ratio = 1.0 / MaxAdjustmentFactor
+		}
+
+		logRatio := math.Log2(ratio)
+		var adjustment int
+		if math.Abs(logRatio) < 0.25 {
+			adjustment = 0
+		} else {
+			adjustment = int(math.Round(logRatio))
+		}
+
+		currentBits += adjustment
+		if currentBits < MinDifficultyBits {
+			currentBits = MinDifficultyBits
+		} else if currentBits > MaxDifficultyBits {
+			currentBits = MaxDifficultyBits
+		}
 	}
 
-	bc.DifficultyBits = newBits
-	bc.Difficulty = difficultyBitsToHexDigits(newBits)
+	bc.DifficultyBits = currentBits
+	bc.Difficulty = difficultyBitsToHexDigits(currentBits)
 	bc.lastAdjustmentHeight = 0 // Reset cache
 	fmt.Printf("Recalculated difficulty from chain: %d bits (hex %d) at height %d\n",
-		newBits, bc.Difficulty, height)
+		currentBits, bc.Difficulty, height)
 }
 
 // IsValid validates the entire blockchain
