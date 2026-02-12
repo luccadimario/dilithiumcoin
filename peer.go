@@ -906,22 +906,24 @@ func (pm *PeerManager) handleLegacyChain(peer *Peer, msg *P2PMessage) {
 	pm.node.Blockchain.mutex.Lock()
 	defer pm.node.Blockchain.mutex.Unlock()
 
-	// If their chain is longer and valid, replace ours
-	if len(blocks) > len(pm.node.Blockchain.Blocks) {
-		if pm.node.isValidChain(blocks) {
-			fmt.Printf("Replacing our chain (length %d) with peer's chain (length %d)\n",
-				len(pm.node.Blockchain.Blocks), len(blocks))
+	// Silently ignore chains that aren't longer
+	if len(blocks) <= len(pm.node.Blockchain.Blocks) {
+		return
+	}
 
-			// Cancel any in-progress mining
-			pm.node.cancelMining()
+	// Use cumulative work for chain selection (shannon #7)
+	if cumulativeWork(blocks) > cumulativeWork(pm.node.Blockchain.Blocks) && pm.node.isValidChain(blocks) {
+		fmt.Printf("Replacing our chain (length %d) with peer's chain (length %d)\n",
+			len(pm.node.Blockchain.Blocks), len(blocks))
 
-			pm.node.Blockchain.Blocks = blocks
-			pm.node.Blockchain.clearMempool()
-		} else {
-			fmt.Printf("Received invalid chain from %s, ignoring\n", peer.Addr)
-		}
-	} else {
-		fmt.Printf("Our chain is same length or longer, ignoring peer's chain\n")
+		// Cancel any in-progress mining
+		pm.node.cancelMining()
+
+		pm.node.Blockchain.Blocks = blocks
+		pm.node.Blockchain.recalcDifficultyFromChain()
+		pm.node.Blockchain.clearMempool()
+	} else if len(blocks) > len(pm.node.Blockchain.Blocks) {
+		fmt.Printf("Received invalid chain from %s, ignoring\n", peer.Addr)
 	}
 }
 

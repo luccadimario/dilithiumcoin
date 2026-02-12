@@ -341,6 +341,11 @@ func (n *Node) handleChainMessage(msg Message, peerAddr string) {
 	n.Blockchain.mutex.Lock()
 	defer n.Blockchain.mutex.Unlock()
 
+	// Silently ignore chains that aren't better than ours
+	if len(chain) <= len(n.Blockchain.Blocks) {
+		return
+	}
+
 	// Use cumulative work (not just length) for chain selection (shannon #7)
 	if cumulativeWork(chain) > cumulativeWork(n.Blockchain.Blocks) && n.isValidChain(chain) {
 		fmt.Printf("Syncing blockchain from %s (length: %d -> %d)\n", peerAddr, len(n.Blockchain.Blocks), len(chain))
@@ -356,7 +361,6 @@ func (n *Node) handleChainMessage(msg Message, peerAddr string) {
 		// Clear mempool - transactions may have been included in the new chain
 		n.Blockchain.clearMempool()
 	}
-	// If chains are same length, keep our own (first miner to extend wins)
 }
 
 // ============================================================================

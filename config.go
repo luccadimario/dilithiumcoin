@@ -14,7 +14,7 @@ import (
 
 const (
 	// Version is the current Dilithium version
-	Version = "3.0.8"
+	Version = "3.0.9"
 
 	// VersionMajor is the major version number
 	VersionMajor = 3
@@ -23,7 +23,7 @@ const (
 	VersionMinor = 0
 
 	// VersionPatch is the patch version number
-	VersionPatch = 8
+	VersionPatch = 9
 
 	// VersionPreRelease is the pre-release identifier (empty for release)
 	VersionPreRelease = ""
