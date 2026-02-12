@@ -152,6 +152,8 @@ type Blockchain struct {
 	PendingTransactions []*Transaction
 	Mempool             map[string]*Transaction
 	mutex               sync.RWMutex
+	lastAdjustmentHeight int   // Cache: last height we computed adjustment
+	lastAdjustmentBits   int   // Cache: result of that computation
 }
 
 // NewBlockchain initializes a new blockchain with genesis block
@@ -407,8 +409,16 @@ func (bc *Blockchain) GetCurrentDifficultyBitsLocked() int {
 		return bits
 	}
 
-	// Calculate difficulty adjustment
-	return bc.calculateNewDifficultyBits()
+	// Use cached result if we already calculated for this height
+	if bc.lastAdjustmentHeight == height {
+		return bc.lastAdjustmentBits
+	}
+
+	// Calculate difficulty adjustment and cache it
+	bits := bc.calculateNewDifficultyBits()
+	bc.lastAdjustmentHeight = height
+	bc.lastAdjustmentBits = bits
+	return bits
 }
 
 // calculateNewDifficultyBits computes new bit-based difficulty from recent block times

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -914,8 +915,9 @@ func (n *Node) handleExplorerStats(w http.ResponseWriter, r *http.Request) {
 		totalTxs += len(block.Transactions)
 	}
 
-	// Get current difficulty
+	// Get current difficulty (both formats)
 	currentDifficulty := n.Blockchain.GetCurrentDifficulty()
+	currentDifficultyBits := n.Blockchain.GetCurrentDifficultyBits()
 
 	// Calculate average block time (last 10 blocks)
 	var avgBlockTime float64
@@ -932,13 +934,10 @@ func (n *Node) handleExplorerStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Estimate hashrate (very rough: difficulty * 2^32 / avgBlockTime)
+	// Estimate hashrate using bit-based difficulty: 2^bits / avgBlockTime
 	var estimatedHashrate float64
 	if avgBlockTime > 0 {
-		hashesPerBlock := 1.0
-		for i := 0; i < currentDifficulty; i++ {
-			hashesPerBlock *= 16
-		}
+		hashesPerBlock := math.Pow(2, float64(currentDifficultyBits))
 		estimatedHashrate = hashesPerBlock / avgBlockTime
 	}
 
@@ -957,11 +956,12 @@ func (n *Node) handleExplorerStats(w http.ResponseWriter, r *http.Request) {
 	if height > 0 {
 		lb := blocks[height-1]
 		lastBlock = map[string]interface{}{
-			"index":      lb.Index,
-			"hash":       lb.Hash,
-			"timestamp":  lb.Timestamp,
-			"tx_count":   len(lb.Transactions),
-			"difficulty": lb.Difficulty,
+			"index":           lb.Index,
+			"hash":            lb.Hash,
+			"timestamp":       lb.Timestamp,
+			"tx_count":        len(lb.Transactions),
+			"difficulty":      lb.Difficulty,
+			"difficulty_bits": lb.getEffectiveDifficultyBits(),
 		}
 	}
 
@@ -977,6 +977,7 @@ func (n *Node) handleExplorerStats(w http.ResponseWriter, r *http.Request) {
 			"blockchain": map[string]interface{}{
 				"height":           height,
 				"difficulty":       currentDifficulty,
+				"difficulty_bits":  currentDifficultyBits,
 				"total_txs":        totalTxs,
 				"avg_block_time":   avgBlockTime,
 				"hashrate_estimate": estimatedHashrate,
