@@ -350,6 +350,9 @@ func (n *Node) handleChainMessage(msg Message, peerAddr string) {
 
 		n.Blockchain.Blocks = chain
 
+		// Recalculate DifficultyBits from the synced chain so it doesn't reset to default
+		n.Blockchain.recalcDifficultyFromChain()
+
 		// Clear mempool - transactions may have been included in the new chain
 		n.Blockchain.clearMempool()
 	}
