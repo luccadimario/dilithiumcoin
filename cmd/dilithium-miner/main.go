@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	AppVersion = "3.2.0"
+	AppVersion = "3.2.1"
 	AppName    = "dilithium-miner"
 )
 
@@ -37,12 +37,40 @@ func main() {
 
 	// Pool worker mode: connect to a pool server
 	if *poolAddr != "" {
+		// Resolve worker's payout address
+		address := *minerAddr
+		if address == "" && *walletDir != "" {
+			addr, err := loadMinerAddress(*walletDir)
+			if err != nil {
+				fmt.Printf("Error loading wallet: %v\n", err)
+				os.Exit(1)
+			}
+			address = addr
+		}
+		if address == "" {
+			// Try default wallet location
+			home, _ := os.UserHomeDir()
+			defaultDir := filepath.Join(home, ".dilithium", "wallet")
+			if addr, err := loadMinerAddress(defaultDir); err == nil {
+				address = addr
+			}
+		}
+		if address == "" {
+			fmt.Println("Error: Pool worker needs a payout address.")
+			fmt.Println()
+			fmt.Println("Provide an address with --miner or --wallet:")
+			fmt.Println("  dilithium-miner --pool <host:port> --miner <address>")
+			fmt.Println("  dilithium-miner --pool <host:port> --wallet ~/.dilithium/wallet")
+			os.Exit(1)
+		}
+
 		fmt.Printf("Mode:    Pool Worker\n")
 		fmt.Printf("Pool:    %s\n", *poolAddr)
+		fmt.Printf("Address: %s\n", address)
 		fmt.Printf("Threads: %d\n", *threads)
 		fmt.Println()
 
-		client := NewPoolClient(*poolAddr, *threads)
+		client := NewPoolClient(*poolAddr, address, *threads)
 		client.Start()
 
 		sigCh := make(chan os.Signal, 1)

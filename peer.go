@@ -398,6 +398,9 @@ type PeerManager struct {
 	// Node reference
 	node *Node
 
+	// Seed nodes for fallback reconnection
+	seedNodes []string
+
 	// State
 	started bool
 	stopCh  chan struct{}
@@ -428,6 +431,7 @@ func (pm *PeerManager) Start(localAddr *NetAddr) {
 
 	go pm.maintainPeers()
 	go pm.cleanupBanned()
+	go pm.rebroadcastMempool()
 
 	fmt.Println("Peer manager started")
 }
@@ -1371,6 +1375,20 @@ func (pm *PeerManager) checkAndConnectPeers() {
 	if needed > 0 {
 		fmt.Printf("Need %d more outbound peers (have %d)\n", needed, outbound)
 		pm.connectToNewPeers(needed)
+
+		// If we still don't have enough peers, fall back to seed nodes
+		outbound = pm.OutboundCount()
+		if outbound < pm.config.MinPeers && len(pm.seedNodes) > 0 {
+			fmt.Println("Address book exhausted, falling back to seed nodes...")
+			for _, seed := range pm.seedNodes {
+				if pm.IsConnected(seed) {
+					continue
+				}
+				if err := pm.Connect(seed); err == nil {
+					fmt.Printf("Reconnected to seed node: %s\n", seed)
+				}
+			}
+		}
 	}
 }
 
@@ -1412,6 +1430,39 @@ func (pm *PeerManager) connectToNewPeers(count int) {
 		addr := entry.Addr.Address()
 		if err := pm.Connect(addr); err == nil {
 			connected++
+		}
+	}
+}
+
+// rebroadcastMempool periodically re-announces mempool transactions to all peers.
+// This ensures transactions propagate even if peers connected before the tx was submitted.
+func (pm *PeerManager) rebroadcastMempool() {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pm.stopCh:
+			return
+		case <-ticker.C:
+			if pm.node == nil || pm.node.Blockchain == nil {
+				continue
+			}
+
+			txs := pm.node.Blockchain.GetPendingTransactions()
+			if len(txs) == 0 {
+				continue
+			}
+
+			// Build inventory list of all mempool transactions
+			var inv []*InvVector
+			for _, tx := range txs {
+				inv = append(inv, NewInvVector(InvTypeTx, tx.Signature))
+			}
+
+			// Broadcast inventory to all peers
+			pm.BroadcastInv(inv, "")
+			fmt.Printf("Rebroadcast %d mempool transactions to peers\n", len(txs))
 		}
 	}
 }
@@ -1716,6 +1767,9 @@ func (pm *PeerManager) ConnectWithRetry(addr string, maxRetries int) error {
 // 3. Use getaddr to discover more peers
 func (pm *PeerManager) Bootstrap(config *NetworkConfig, peersFile string) error {
 	fmt.Println("Starting network bootstrap...")
+
+	// Store seed nodes for periodic fallback
+	pm.seedNodes = config.SeedNodes
 
 	// Load saved peers
 	if err := pm.LoadPeerDatabase(peersFile); err != nil {

@@ -14,6 +14,7 @@ import (
 // PoolClient connects to a pool server as a worker
 type PoolClient struct {
 	poolAddr string
+	address  string // Worker's payout address
 	threads  int
 	conn     net.Conn
 	stopCh   chan struct{}
@@ -28,9 +29,10 @@ type PoolClient struct {
 }
 
 // NewPoolClient creates a new pool worker client
-func NewPoolClient(poolAddr string, threads int) *PoolClient {
+func NewPoolClient(poolAddr, address string, threads int) *PoolClient {
 	return &PoolClient{
 		poolAddr: poolAddr,
+		address:  address,
 		threads:  threads,
 		stopCh:   make(chan struct{}),
 	}
@@ -105,6 +107,11 @@ func (pc *PoolClient) connectAndWork() error {
 
 	fmt.Printf("Connected to pool at %s\n", pc.poolAddr)
 
+	// Send registration message
+	if err := pc.sendRegistration(); err != nil {
+		return fmt.Errorf("registration failed: %w", err)
+	}
+
 	scanner := bufio.NewScanner(pc.conn)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
@@ -124,12 +131,40 @@ func (pc *PoolClient) connectAndWork() error {
 		case "work":
 			pc.handleWork(&msg)
 		case "stats":
-			fmt.Printf("Pool: %d workers | %d blocks found | your shares: %d\n",
-				msg.Workers, msg.Found, msg.Shares)
+			if msg.Earnings != "" {
+				fmt.Printf("Pool: %d workers | %d blocks found | your shares: %d | earnings: %s | fee: %s\n",
+					msg.Workers, msg.Found, msg.Shares, msg.Earnings, msg.PoolFee)
+			} else {
+				fmt.Printf("Pool: %d workers | %d blocks found | your shares: %d\n",
+					msg.Workers, msg.Found, msg.Shares)
+			}
 		}
 	}
 
 	return fmt.Errorf("pool connection closed")
+}
+
+func (pc *PoolClient) sendRegistration() error {
+	msg := PoolMessage{
+		Type:    "register",
+		Address: pc.address,
+		Threads: pc.threads,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	pc.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_, err = pc.conn.Write(data)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Registered with pool: address=%s, threads=%d\n", pc.address, pc.threads)
+	return nil
 }
 
 func (pc *PoolClient) handleWork(msg *PoolMessage) {

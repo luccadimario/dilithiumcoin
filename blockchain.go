@@ -15,8 +15,11 @@ import (
 
 // Difficulty adjustment constants
 const (
-	// BlocksPerAdjustment is how often difficulty adjusts (like Bitcoin's 2016)
+	// BlocksPerAdjustment is how often difficulty adjusts (legacy, kept for compatibility)
 	BlocksPerAdjustment = 50
+
+	// DAAWindow is the number of recent blocks to average for per-block adjustment
+	DAAWindow = 20
 
 	// TargetBlockTime is the desired time between blocks in seconds
 	TargetBlockTime = 60 // 1 minute per block
@@ -33,8 +36,13 @@ const (
 	// MaxDifficultyBits is the maximum bit-based difficulty (= MaxDifficulty * 4)
 	MaxDifficultyBits = 80
 
-	// MaxAdjustmentFactor limits how much difficulty can change per adjustment
+	// MaxAdjustmentFactor limits how much difficulty can change per adjustment (legacy pre-fork)
 	MaxAdjustmentFactor = 4.0
+
+	// DAAForkHeight is the block height at which the per-block DAA activates.
+	// Before this height, the legacy 50-block adjustment algorithm is used.
+	// This enables a clean hard fork: nodes must upgrade before this height.
+	DAAForkHeight = 5800
 
 	// ============================================================================
 	// SUPPLY CONTROL (Bitcoin-like halving)
@@ -398,23 +406,21 @@ func (bc *Blockchain) GetCurrentDifficultyLocked() int {
 func (bc *Blockchain) GetCurrentDifficultyBitsLocked() int {
 	height := len(bc.Blocks)
 
-	// Use initial difficulty until we have enough blocks
-	if height < BlocksPerAdjustment {
-		return bc.DifficultyBits
-	}
-
-	// Check if we're at an adjustment boundary
-	if height%BlocksPerAdjustment != 0 {
-		// Not at adjustment boundary — use blockchain's tracked difficulty
-		return bc.DifficultyBits
-	}
-
 	// Use cached result if we already calculated for this height
 	if bc.lastAdjustmentHeight == height {
 		return bc.lastAdjustmentBits
 	}
 
-	// Calculate difficulty adjustment, cache it, and update blockchain state
+	// Before fork: use legacy 50-block adjustment
+	if height < DAAForkHeight {
+		return bc.getLegacyDifficultyBits(height)
+	}
+
+	// After fork: use per-block DAA (LWMA)
+	if height < DAAWindow {
+		return bc.DifficultyBits
+	}
+
 	bits := bc.calculateNewDifficultyBits()
 	bc.lastAdjustmentHeight = height
 	bc.lastAdjustmentBits = bits
@@ -423,51 +429,139 @@ func (bc *Blockchain) GetCurrentDifficultyBitsLocked() int {
 	return bits
 }
 
-// calculateNewDifficultyBits computes new bit-based difficulty from recent block times
-// Each bit step = 2x difficulty change (vs 16x per hex digit). This allows fine-grained
-// convergence to the target block time.
-func (bc *Blockchain) calculateNewDifficultyBits() int {
+// getLegacyDifficultyBits implements the pre-fork 50-block adjustment algorithm
+func (bc *Blockchain) getLegacyDifficultyBits(height int) int {
+	if height < BlocksPerAdjustment {
+		return bc.DifficultyBits
+	}
+
+	if height%BlocksPerAdjustment != 0 {
+		return bc.DifficultyBits
+	}
+
+	bits := bc.calculateLegacyDifficultyBits()
+	bc.lastAdjustmentHeight = height
+	bc.lastAdjustmentBits = bits
+	bc.DifficultyBits = bits
+	bc.Difficulty = difficultyBitsToHexDigits(bits)
+	return bits
+}
+
+// calculateLegacyDifficultyBits is the pre-fork algorithm: compare actual vs expected
+// time over the last BlocksPerAdjustment (50) blocks, adjust by up to 2 bits.
+func (bc *Blockchain) calculateLegacyDifficultyBits() int {
 	height := len(bc.Blocks)
 
-	// Get the block at the start of the adjustment period
 	startBlock := bc.Blocks[height-BlocksPerAdjustment]
 	endBlock := bc.Blocks[height-1]
 
-	// Calculate actual time for the last adjustment period
 	actualTime := endBlock.Timestamp - startBlock.Timestamp
 	if actualTime <= 0 {
 		actualTime = 1
 	}
 
-	// Expected time for the period
 	expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
-
-	// Current difficulty in bits (from blockchain state, not from blocks)
-	// Legacy v3.0.1 blocks don't set DifficultyBits, so reading from blocks
-	// would always return the initial value. Use blockchain's tracked state.
 	currentBits := bc.DifficultyBits
 
-	// Calculate adjustment ratio
 	ratio := float64(expectedTime) / float64(actualTime)
-
-	// Clamp ratio to prevent extreme adjustments
 	if ratio > MaxAdjustmentFactor {
 		ratio = MaxAdjustmentFactor
 	} else if ratio < 1.0/MaxAdjustmentFactor {
 		ratio = 1.0 / MaxAdjustmentFactor
 	}
 
-	// Use logarithmic scaling: each bit = 2x difficulty
-	// log2(ratio) gives exact number of bits to adjust
-	// ratio=2 → +1 bit, ratio=4 → +2 bits, ratio=0.5 → -1 bit
 	var adjustment int
 	logRatio := math.Log2(ratio)
 	if math.Abs(logRatio) < 0.25 {
-		// Within ~19% of target — no adjustment needed
 		adjustment = 0
 	} else {
-		// Round to nearest integer bit adjustment
 		adjustment = int(math.Round(logRatio))
+	}
+
+	newBits := currentBits + adjustment
+	if newBits < MinDifficultyBits {
+		newBits = MinDifficultyBits
+	} else if newBits > MaxDifficultyBits {
+		newBits = MaxDifficultyBits
+	}
+
+	avgBlockTime := float64(actualTime) / float64(BlocksPerAdjustment)
+	if newBits != currentBits {
+		fmt.Printf("=== DIFFICULTY ADJUSTMENT (Legacy) ===\n")
+		fmt.Printf("  Block height: %d\n", height)
+		fmt.Printf("  Actual time for %d blocks: %ds (avg %.1fs/block)\n",
+			BlocksPerAdjustment, actualTime, avgBlockTime)
+		fmt.Printf("  Expected time: %ds (target %ds/block)\n",
+			expectedTime, TargetBlockTime)
+		fmt.Printf("  Ratio: %.2f (log2: %.2f)\n", ratio, logRatio)
+		fmt.Printf("  DifficultyBits: %d -> %d\n", currentBits, newBits)
+		fmt.Printf("======================================\n")
+	}
+
+	bc.DifficultyBits = newBits
+	return newBits
+}
+
+// calculateNewDifficultyBits computes new bit-based difficulty using LWMA (Linear Weighted Moving Average)
+// This is a per-block adjustment algorithm that responds quickly to hashrate changes.
+// Each bit step = 2x difficulty change (vs 16x per hex digit). Max adjustment = +/- 1 bit per block.
+func (bc *Blockchain) calculateNewDifficultyBits() int {
+	height := len(bc.Blocks)
+
+	// Current difficulty in bits (from blockchain state, not from blocks)
+	currentBits := bc.DifficultyBits
+
+	// Calculate weighted average of recent block solve times
+	var weightedSum int64
+	var totalWeight int64
+
+	// Look at the last DAAWindow blocks and compute solve times
+	for i := 0; i < DAAWindow; i++ {
+		blockIndex := height - DAAWindow + i
+		if blockIndex <= 0 {
+			continue // Skip if we don't have a previous block
+		}
+
+		currentBlock := bc.Blocks[blockIndex]
+		previousBlock := bc.Blocks[blockIndex-1]
+
+		solveTime := currentBlock.Timestamp - previousBlock.Timestamp
+		if solveTime <= 0 {
+			solveTime = 1 // Prevent division by zero or negative times
+		}
+
+		// Weight recent blocks more heavily: weight = i+1 (1 for oldest, DAAWindow for newest)
+		weight := int64(i + 1)
+		weightedSum += solveTime * weight
+		totalWeight += weight
+	}
+
+	if totalWeight == 0 {
+		// Should not happen, but safeguard
+		return currentBits
+	}
+
+	// Calculate weighted average block time
+	weightedAvg := float64(weightedSum) / float64(totalWeight)
+
+	// Determine adjustment based on weighted average
+	// Normal mode: +/- 1 bit. Emergency mode: up to -3 bits if severely stuck.
+	var adjustment int
+	if weightedAvg < float64(TargetBlockTime)*0.7 {
+		// Mining too fast — increase difficulty by 1 bit
+		adjustment = 1
+	} else if weightedAvg > float64(TargetBlockTime)*5.0 {
+		// EMERGENCY: blocks taking 5x+ target time — drop 3 bits (8x easier)
+		adjustment = -3
+	} else if weightedAvg > float64(TargetBlockTime)*3.0 {
+		// SEVERE: blocks taking 3x+ target time — drop 2 bits (4x easier)
+		adjustment = -2
+	} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+		// Mining too slow — decrease difficulty by 1 bit
+		adjustment = -1
+	} else {
+		// Within acceptable range — no change
+		adjustment = 0
 	}
 
 	newBits := currentBits + adjustment
@@ -480,22 +574,22 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 	}
 
 	// Log the adjustment
-	avgBlockTime := float64(actualTime) / float64(BlocksPerAdjustment)
 	if newBits != currentBits {
-		fmt.Printf("=== DIFFICULTY ADJUSTMENT ===\n")
+		fmt.Printf("=== DIFFICULTY ADJUSTMENT (Per-Block DAA) ===\n")
 		fmt.Printf("  Block height: %d\n", height)
-		fmt.Printf("  Actual time for %d blocks: %ds (avg %.1fs/block)\n",
-			BlocksPerAdjustment, actualTime, avgBlockTime)
-		fmt.Printf("  Expected time: %ds (target %ds/block)\n",
-			expectedTime, TargetBlockTime)
-		fmt.Printf("  Ratio: %.2f (log2: %.2f)\n", ratio, logRatio)
+		fmt.Printf("  Weighted avg block time: %.1fs (target %ds)\n", weightedAvg, TargetBlockTime)
 		fmt.Printf("  DifficultyBits: %d -> %d (hex digits: %d -> %d)\n",
 			currentBits, newBits,
 			difficultyBitsToHexDigits(currentBits), difficultyBitsToHexDigits(newBits))
-		fmt.Printf("=============================\n")
+		if adjustment > 0 {
+			fmt.Printf("  Mining too fast — increased difficulty\n")
+		} else {
+			fmt.Printf("  Mining too slow — decreased difficulty\n")
+		}
+		fmt.Printf("=============================================\n")
 	} else {
-		fmt.Printf("Difficulty check at height %d: no change (bits=%d, avg=%.1fs/block)\n",
-			height, currentBits, avgBlockTime)
+		fmt.Printf("Difficulty check at height %d: no change (bits=%d, weighted avg=%.1fs/block)\n",
+			height, currentBits, weightedAvg)
 	}
 
 	// Update the blockchain's tracked difficulty
@@ -504,100 +598,166 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 	return newBits
 }
 
-// recalcDifficultyFromChain sets DifficultyBits based on the last adjustment
-// period in the synced chain. We can't replay all periods retroactively because
-// the existing blocks were mined at their actual difficulty — we just need to
-// compute what difficulty the NEXT block should be at based on recent block times.
+// recalcDifficultyFromChain sets DifficultyBits based on the synced chain.
+// If we're pre-fork, uses the legacy algorithm. Post-fork, uses LWMA.
 func (bc *Blockchain) recalcDifficultyFromChain() {
 	height := len(bc.Blocks)
-	if height < BlocksPerAdjustment {
+
+	// Find the most recent block with DifficultyBits set as anchor
+	anchorBits := 0
+	searchDepth := DAAWindow * 2
+	if searchDepth < BlocksPerAdjustment*2 {
+		searchDepth = BlocksPerAdjustment * 2
+	}
+	for i := height - 1; i >= 0 && i >= height-searchDepth; i-- {
+		if bc.Blocks[i].DifficultyBits > 0 {
+			anchorBits = bc.Blocks[i].DifficultyBits
+			break
+		}
+	}
+
+	// Set baseline from anchor or chain state
+	if anchorBits > 0 {
+		bc.DifficultyBits = anchorBits
+	} else {
+		bc.DifficultyBits = hexDigitsToDifficultyBits(bc.Difficulty)
+		if bc.DifficultyBits < MinDifficultyBits {
+			bc.DifficultyBits = MinDifficultyBits
+		}
+	}
+
+	// Pre-fork: use legacy recalc (replay last adjustment period)
+	if height < DAAForkHeight {
+		bc.recalcLegacyDifficulty(height)
 		return
 	}
 
-	// Find the most recent block with DifficultyBits set (from v3.0.9+ miners)
-	// This serves as a reliable anchor for the accumulated difficulty state
-	anchorBits := 0
-	anchorHeight := 0
-	for i := height - 1; i >= 0; i-- {
-		if bc.Blocks[i].DifficultyBits > 0 {
-			if bc.Blocks[i].DifficultyBits > anchorBits {
-				anchorBits = bc.Blocks[i].DifficultyBits
-				anchorHeight = i
-			}
-			// Only scan recent blocks (last 500) to find anchor
-			if height-1-i > 500 {
-				break
-			}
-		}
+	// Post-fork: use LWMA
+	if height < DAAWindow {
+		bc.Difficulty = difficultyBitsToHexDigits(bc.DifficultyBits)
+		return
 	}
 
-	// Determine baseline and starting period for replay
-	var currentBits int
-	var startPeriod int
-	lastPeriod := height / BlocksPerAdjustment
+	bc.recalcLWMADifficulty(height)
+}
 
-	if anchorBits > 0 {
-		// Use the anchor block's difficulty as baseline
-		currentBits = anchorBits
-		// Replay from the period AFTER the anchor's period
-		startPeriod = (anchorHeight / BlocksPerAdjustment) + 1
+// recalcLegacyDifficulty replays the last 50-block adjustment period
+func (bc *Blockchain) recalcLegacyDifficulty(height int) {
+	if height < BlocksPerAdjustment {
+		bc.Difficulty = difficultyBitsToHexDigits(bc.DifficultyBits)
+		fmt.Printf("Recalculated difficulty from chain (legacy): %d bits at height %d\n",
+			bc.DifficultyBits, height)
+		return
+	}
+
+	// Find the last adjustment boundary
+	lastBoundary := (height / BlocksPerAdjustment) * BlocksPerAdjustment
+	if lastBoundary >= height {
+		lastBoundary -= BlocksPerAdjustment
+	}
+	if lastBoundary < BlocksPerAdjustment {
+		bc.Difficulty = difficultyBitsToHexDigits(bc.DifficultyBits)
+		fmt.Printf("Recalculated difficulty from chain (legacy): %d bits at height %d\n",
+			bc.DifficultyBits, height)
+		return
+	}
+
+	startBlock := bc.Blocks[lastBoundary-BlocksPerAdjustment]
+	endBlock := bc.Blocks[lastBoundary-1]
+
+	actualTime := endBlock.Timestamp - startBlock.Timestamp
+	if actualTime <= 0 {
+		actualTime = 1
+	}
+
+	expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
+	currentBits := bc.DifficultyBits
+
+	ratio := float64(expectedTime) / float64(actualTime)
+	if ratio > MaxAdjustmentFactor {
+		ratio = MaxAdjustmentFactor
+	} else if ratio < 1.0/MaxAdjustmentFactor {
+		ratio = 1.0 / MaxAdjustmentFactor
+	}
+
+	logRatio := math.Log2(ratio)
+	var adjustment int
+	if math.Abs(logRatio) < 0.25 {
+		adjustment = 0
 	} else {
-		// No v3.0.9 blocks found — use the chain's hex difficulty as baseline
-		// and replay the last few periods to catch up
-		currentBits = hexDigitsToDifficultyBits(bc.Difficulty)
-		if currentBits < MinDifficultyBits {
-			currentBits = MinDifficultyBits
-		}
-		startPeriod = lastPeriod - 5
-		if startPeriod < 1 {
-			startPeriod = 1
-		}
+		adjustment = int(math.Round(logRatio))
 	}
 
-	// Replay each adjustment period, carrying accumulated difficulty forward
-	for period := startPeriod; period <= lastPeriod; period++ {
-		boundaryHeight := period * BlocksPerAdjustment
-		if boundaryHeight >= height || boundaryHeight < BlocksPerAdjustment {
+	newBits := currentBits + adjustment
+	if newBits < MinDifficultyBits {
+		newBits = MinDifficultyBits
+	} else if newBits > MaxDifficultyBits {
+		newBits = MaxDifficultyBits
+	}
+
+	bc.DifficultyBits = newBits
+	bc.Difficulty = difficultyBitsToHexDigits(newBits)
+	bc.lastAdjustmentHeight = 0
+	fmt.Printf("Recalculated difficulty from chain (legacy): %d bits (hex %d) at height %d\n",
+		newBits, bc.Difficulty, height)
+}
+
+// recalcLWMADifficulty uses the post-fork LWMA algorithm
+func (bc *Blockchain) recalcLWMADifficulty(height int) {
+	currentBits := bc.DifficultyBits
+
+	var weightedSum int64
+	var totalWeight int64
+
+	for i := 0; i < DAAWindow; i++ {
+		blockIndex := height - DAAWindow + i
+		if blockIndex <= 0 {
 			continue
 		}
 
-		startBlock := bc.Blocks[boundaryHeight-BlocksPerAdjustment]
-		endBlock := bc.Blocks[boundaryHeight-1]
-
-		actualTime := endBlock.Timestamp - startBlock.Timestamp
-		if actualTime <= 0 {
-			actualTime = 1
-		}
-		expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
-
-		ratio := float64(expectedTime) / float64(actualTime)
-		if ratio > MaxAdjustmentFactor {
-			ratio = MaxAdjustmentFactor
-		} else if ratio < 1.0/MaxAdjustmentFactor {
-			ratio = 1.0 / MaxAdjustmentFactor
+		solveTime := bc.Blocks[blockIndex].Timestamp - bc.Blocks[blockIndex-1].Timestamp
+		if solveTime <= 0 {
+			solveTime = 1
 		}
 
-		logRatio := math.Log2(ratio)
-		var adjustment int
-		if math.Abs(logRatio) < 0.25 {
-			adjustment = 0
-		} else {
-			adjustment = int(math.Round(logRatio))
-		}
-
-		currentBits += adjustment
-		if currentBits < MinDifficultyBits {
-			currentBits = MinDifficultyBits
-		} else if currentBits > MaxDifficultyBits {
-			currentBits = MaxDifficultyBits
-		}
+		weight := int64(i + 1)
+		weightedSum += solveTime * weight
+		totalWeight += weight
 	}
 
-	bc.DifficultyBits = currentBits
-	bc.Difficulty = difficultyBitsToHexDigits(currentBits)
-	bc.lastAdjustmentHeight = 0 // Reset cache
-	fmt.Printf("Recalculated difficulty from chain: %d bits (hex %d) at height %d\n",
-		currentBits, bc.Difficulty, height)
+	if totalWeight == 0 {
+		bc.Difficulty = difficultyBitsToHexDigits(currentBits)
+		bc.lastAdjustmentHeight = 0
+		fmt.Printf("Recalculated difficulty from chain (LWMA): %d bits at height %d\n",
+			currentBits, height)
+		return
+	}
+
+	weightedAvg := float64(weightedSum) / float64(totalWeight)
+
+	var adjustment int
+	if weightedAvg < float64(TargetBlockTime)*0.7 {
+		adjustment = 1
+	} else if weightedAvg > float64(TargetBlockTime)*5.0 {
+		adjustment = -3
+	} else if weightedAvg > float64(TargetBlockTime)*3.0 {
+		adjustment = -2
+	} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+		adjustment = -1
+	}
+
+	newBits := currentBits + adjustment
+	if newBits < MinDifficultyBits {
+		newBits = MinDifficultyBits
+	} else if newBits > MaxDifficultyBits {
+		newBits = MaxDifficultyBits
+	}
+
+	bc.DifficultyBits = newBits
+	bc.Difficulty = difficultyBitsToHexDigits(newBits)
+	bc.lastAdjustmentHeight = 0
+	fmt.Printf("Recalculated difficulty from chain (LWMA): %d bits (hex %d) at height %d (weighted avg: %.1fs)\n",
+		newBits, bc.Difficulty, height, weightedAvg)
 }
 
 // IsValid validates the entire blockchain

@@ -42,7 +42,9 @@ type PoolWorker struct {
 	id       int64
 	conn     net.Conn
 	encoder  *json.Encoder
+	address  string  // Worker's payout address
 	shares   int64
+	earnings int64   // Accumulated earnings in DLT units
 	hashrate float64
 	mu       sync.Mutex
 }
@@ -67,6 +69,8 @@ type PoolMessage struct {
 	Hashrate string          `json:"hashrate,omitempty"`
 	Found    int64           `json:"blocks_found,omitempty"`
 	Shares   int64           `json:"your_shares,omitempty"`
+	Earnings string          `json:"your_earnings,omitempty"`
+	PoolFee  string          `json:"pool_fee,omitempty"`
 	Address  string          `json:"address,omitempty"`
 	Threads  int             `json:"threads,omitempty"`
 	Error    string          `json:"error,omitempty"`
@@ -161,15 +165,6 @@ func (p *Pool) handleWorker(conn net.Conn) {
 
 	fmt.Printf("Pool: Worker #%d connected from %s (total: %d)\n", id, conn.RemoteAddr(), workerCount)
 
-	// Send current work if available
-	p.workMu.RLock()
-	work := p.currentWork
-	p.workMu.RUnlock()
-
-	if work != nil {
-		p.sendWork(worker, work)
-	}
-
 	// Read messages from worker
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -182,10 +177,13 @@ func (p *Pool) handleWorker(conn net.Conn) {
 
 		var msg PoolMessage
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			fmt.Printf("Pool: Worker #%d bad message: %v (raw: %.100s)\n", id, err, scanner.Text())
 			continue
 		}
 
 		switch msg.Type {
+		case "register":
+			p.handleRegister(worker, &msg)
 		case "share":
 			p.handleShare(worker, &msg)
 		case "block":
@@ -201,7 +199,38 @@ func (p *Pool) handleWorker(conn net.Conn) {
 	fmt.Printf("Pool: Worker #%d disconnected (remaining: %d)\n", id, remaining)
 }
 
+func (p *Pool) handleRegister(worker *PoolWorker, msg *PoolMessage) {
+	if msg.Address == "" {
+		fmt.Printf("Pool: Worker #%d registration failed: no address provided\n", worker.id)
+		return
+	}
+
+	worker.mu.Lock()
+	worker.address = msg.Address
+	worker.mu.Unlock()
+
+	fmt.Printf("Pool: Worker #%d registered with address %s\n", worker.id, msg.Address)
+
+	// Send current work after registration
+	p.workMu.RLock()
+	work := p.currentWork
+	p.workMu.RUnlock()
+
+	if work != nil {
+		p.sendWork(worker, work)
+	}
+}
+
 func (p *Pool) handleShare(worker *PoolWorker, msg *PoolMessage) {
+	// Verify worker is registered
+	worker.mu.Lock()
+	if worker.address == "" {
+		worker.mu.Unlock()
+		fmt.Printf("Pool: Worker #%d share rejected: not registered\n", worker.id)
+		return
+	}
+	worker.mu.Unlock()
+
 	// Verify share meets share difficulty
 	p.workMu.RLock()
 	work := p.currentWork
@@ -212,8 +241,15 @@ func (p *Pool) handleShare(worker *PoolWorker, msg *PoolMessage) {
 	}
 
 	if meetsDifficultyBits(msg.Hash, work.ShareBits) {
-		atomic.AddInt64(&worker.shares, 1)
+		count := atomic.AddInt64(&worker.shares, 1)
 		atomic.AddInt64(&p.totalShares, 1)
+		if count%10 == 1 {
+			fmt.Printf("Pool: Worker #%d share accepted (total: %d, hash: %s...)\n",
+				worker.id, count, msg.Hash[:16])
+		}
+	} else {
+		fmt.Printf("Pool: Worker #%d share REJECTED (bits: %d, hash: %s...)\n",
+			worker.id, work.ShareBits, msg.Hash[:16])
 	}
 }
 
@@ -254,6 +290,9 @@ func (p *Pool) handleBlockFound(worker *PoolWorker, msg *PoolMessage) {
 	atomic.AddInt64(&p.blocksFound, 1)
 	fmt.Printf("Pool: Block #%d found by worker #%d!\n", msg.Block.Index, worker.id)
 
+	// Calculate and distribute rewards
+	p.distributeRewards(work.Template.Reward)
+
 	// Reset shares for next round
 	p.mu.Lock()
 	for _, w := range p.workers {
@@ -261,6 +300,46 @@ func (p *Pool) handleBlockFound(worker *PoolWorker, msg *PoolMessage) {
 	}
 	p.mu.Unlock()
 	atomic.StoreInt64(&p.totalShares, 0)
+}
+
+func (p *Pool) distributeRewards(blockReward int64) {
+	totalShares := atomic.LoadInt64(&p.totalShares)
+	if totalShares == 0 {
+		fmt.Printf("Pool: No shares to distribute\n")
+		return
+	}
+
+	// Calculate pool fee
+	poolFee := int64(float64(blockReward) * (p.fee / 100.0))
+	distributable := blockReward - poolFee
+
+	fmt.Printf("Pool: Distributing reward: total=%s, fee=%s (%.1f%%), distributable=%s\n",
+		formatDLT(blockReward), formatDLT(poolFee), p.fee, formatDLT(distributable))
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Calculate each worker's payout
+	for _, w := range p.workers {
+		workerShares := atomic.LoadInt64(&w.shares)
+		if workerShares == 0 {
+			continue
+		}
+
+		// Proportional payout
+		workerPayout := (distributable * workerShares) / totalShares
+
+		w.mu.Lock()
+		w.earnings += workerPayout
+		workerAddr := w.address
+		totalEarnings := w.earnings
+		w.mu.Unlock()
+
+		fmt.Printf("Pool: Worker #%d (%s) earned %s (shares: %d/%d, total earnings: %s)\n",
+			w.id, workerAddr, formatDLT(workerPayout), workerShares, totalShares, formatDLT(totalEarnings))
+	}
+
+	fmt.Printf("Pool: Pool operator earned %s in fees\n", formatDLT(poolFee))
 }
 
 func (p *Pool) submitBlock(block *Block) error {
@@ -484,11 +563,18 @@ func (p *Pool) statsPrinter() {
 			// Send stats to all workers
 			p.mu.Lock()
 			for _, w := range p.workers {
+				w.mu.Lock()
+				workerShares := atomic.LoadInt64(&w.shares)
+				workerEarnings := w.earnings
+				w.mu.Unlock()
+
 				msg := PoolMessage{
 					Type:     "stats",
 					Workers:  workerCount,
 					Found:    blocks,
-					Shares:   atomic.LoadInt64(&w.shares),
+					Shares:   workerShares,
+					Earnings: formatDLT(workerEarnings),
+					PoolFee:  fmt.Sprintf("%.1f%%", p.fee),
 				}
 				w.mu.Lock()
 				data, _ := json.Marshal(msg)
@@ -507,4 +593,11 @@ func (p *Pool) getWorkerCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.workers)
+}
+
+// formatDLT formats an amount in DLT units to a human-readable string
+func formatDLT(amount int64) string {
+	whole := amount / DLTUnit
+	fraction := amount % DLTUnit
+	return fmt.Sprintf("%d.%08d DLT", whole, fraction)
 }
