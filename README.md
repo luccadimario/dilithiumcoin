@@ -58,10 +58,10 @@ Requires Go 1.25 or later.
 
 ```bash
 # Start a node with auto-mining
-./dilithium --port 5001 --api-port 8001 --auto-mine --miner YOUR_WALLET_ADDRESS
+./dilithium --port 1701 --api-port 8001 --auto-mine --miner YOUR_WALLET_ADDRESS
 
 # Connect to an existing node
-./dilithium --port 5002 --api-port 8002 --connect PEER_IP:5001 --auto-mine --miner YOUR_WALLET_ADDRESS
+./dilithium --port 5002 --api-port 8002 --connect PEER_IP:1701 --auto-mine --miner YOUR_WALLET_ADDRESS
 ```
 
 ### Create a Wallet
@@ -92,10 +92,10 @@ Requires Go 1.25 or later.
 dilithium [flags]
 
 Flags:
-  --port string       P2P port (default "5001")
+  --port string       P2P port (default "1701")
   --api-port string   HTTP API port (default "8001")
   --difficulty int    Mining difficulty (default 6)
-  --connect string    Peer address to connect to (e.g., "192.168.1.10:5001")
+  --connect string    Peer address to connect to (e.g., "192.168.1.10:1701")
   --miner string      Your wallet address for mining rewards
   --auto-mine         Enable automatic mining
   --data-dir string   Data directory path
@@ -164,7 +164,7 @@ curl -X POST http://localhost:8001/transaction \
   }'
 
 # Connect to a peer
-curl -X POST "http://localhost:8001/add-peer?address=192.168.1.10:5001"
+curl -X POST "http://localhost:8001/add-peer?address=192.168.1.10:1701"
 ```
 
 ## Running a Network
@@ -173,10 +173,10 @@ curl -X POST "http://localhost:8001/add-peer?address=192.168.1.10:5001"
 
 ```bash
 # Terminal 1 - First node
-./dilithium --port 5001 --api-port 8001 --auto-mine --miner wallet1
+./dilithium --port 1701 --api-port 8001 --auto-mine --miner wallet1
 
 # Terminal 2 - Second node (connects and competes)
-./dilithium --port 5002 --api-port 8002 --connect localhost:5001 --auto-mine --miner wallet2
+./dilithium --port 5002 --api-port 8002 --connect localhost:1701 --auto-mine --miner wallet2
 
 # Terminal 3 - Submit transactions
 curl -X POST http://localhost:8001/transaction \
@@ -188,10 +188,10 @@ curl -X POST http://localhost:8001/transaction \
 
 ```bash
 # Machine A (first node - share your IP with others)
-./dilithium --port 5001 --api-port 8001 --auto-mine --miner your_address
+./dilithium --port 1701 --api-port 8001 --auto-mine --miner your_address
 
 # Machine B (connect to Machine A)
-./dilithium --port 5001 --api-port 8001 --connect MACHINE_A_IP:5001 --auto-mine --miner your_address
+./dilithium --port 1701 --api-port 8001 --connect MACHINE_A_IP:1701 --auto-mine --miner your_address
 ```
 
 ## How Mining Works
@@ -245,7 +245,7 @@ The `--difficulty` flag controls how hard it is to mine a block. Each increment 
 For nodes to connect over the internet:
 
 1. **UPnP** - If your router supports UPnP, port forwarding is automatic
-2. **Manual** - Forward the P2P port (default 5001) to your machine
+2. **Manual** - Forward the P2P port (default 1701) to your machine
 
 ## License
 

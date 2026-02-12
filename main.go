@@ -149,7 +149,7 @@ type Flags struct {
 // parseFlags parses command-line arguments
 func parseFlags() Flags {
 	flags := Flags{}
-	flag.StringVar(&flags.Port, "port", "5001", "P2P port")
+	flag.StringVar(&flags.Port, "port", "1701", "P2P port")
 	flag.IntVar(&flags.Difficulty, "difficulty", 6, "Mining difficulty")
 	flag.StringVar(&flags.Connect, "connect", "", "Initial peer to connect to")
 	flag.StringVar(&flags.APIPort, "api-port", "8001", "HTTP API port")

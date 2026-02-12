@@ -77,13 +77,9 @@ func DefaultNetworkConfig() *NetworkConfig {
 		// Seed nodes for mainnet bootstrap
 		// These are the initial entry points to the network
 		SeedNodes: []string{
-			// Primary seed nodes (replace with actual production nodes)
-			"seed1.dilithiumcoin.com:5001",
-			"seed2.dilithiumcoin.com:5001",
-			"seed3.dilithiumcoin.com:5001",
-			// Backup seed nodes
-			"seed.dilithiumcoin.com:5001",
-			"node.dilithiumcoin.com:5001",
+			"seed.dilithiumcoin.com:1701",
+			"seed1.dilithiumcoin.com:1701",
+			"seed2.dilithiumcoin.com:1701",
 		},
 
 		// Connection limits
@@ -283,8 +279,8 @@ func TestnetConfig() *Config {
 	config := DefaultConfig()
 	config.DataDir = filepath.Join(config.DataDir, "testnet")
 	config.Network.SeedNodes = []string{
-		"testnet-seed1.dilithiumcoin.com:5001",
-		"testnet-seed2.dilithiumcoin.com:5001",
+		"testnet-seed1.dilithiumcoin.com:1701",
+		"testnet-seed2.dilithiumcoin.com:1701",
 	}
 	config.Chain.DefaultDifficulty = 4 // Easier mining for testnet
 	config.Chain.MiningReward = 50 * 100_000_000 // Higher rewards for testing
