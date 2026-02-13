@@ -559,9 +559,10 @@ func (n *Node) isValidChain(chain []*Block) bool {
 
 		// Recompute expected difficulty at this height
 		blockBits := chain[i].getEffectiveDifficultyBits()
-		if i >= DAAForkHeight {
-			// Strict difficulty validation only after DAA fork — before that,
-			// legacy nodes used varying algorithms and the chain is accepted history.
+		if i >= DAAForkHeight+DAAWindow {
+			// Strict difficulty validation only after DAA fork + full LWMA window,
+			// so the algorithm has a complete set of post-fork blocks to work with.
+			// Pre-fork and transition blocks used varying legacy algorithms.
 			expectedBits := computeExpectedDifficultyBits(chain, i, runningBits)
 			if blockBits != expectedBits {
 				fmt.Printf("Chain validation failed at block %d: difficulty %d bits, expected %d bits\n",
