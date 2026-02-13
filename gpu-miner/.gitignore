@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target
+Cargo.lock
+
+# CUDA build artifacts
+*.o
+*.so
+*.dll
+*.exp
+*.lib
+*.pdb
+*.obj
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

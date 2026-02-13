@@ -1,0 +1,53 @@
+[package]
+name = "dilithium-gpu-miner"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client for node API
+reqwest = { version = "0.11", features = ["json"] }
+
+# JSON serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Hex encoding/decoding
+hex = "0.4"
+
+# SHA-256 for host-side midstate computation
+sha2 = "0.10"
+
+# Atomic operations
+crossbeam = "0.8"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Signal handling
+ctrlc = "3.4"
+
+# Web server for monitoring dashboard
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors"] }
+
+[build-dependencies]
+# CUDA compilation
+cc = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

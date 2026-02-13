@@ -6,6 +6,26 @@
 VERSION="3.4.0"
 PROJECT_NAME="dilithium"
 
+# Parse flags
+BUILD_GPU_MINER=false
+for arg in "$@"; do
+    case $arg in
+        --gpu-miner)
+            BUILD_GPU_MINER=true
+            shift
+            ;;
+        --help)
+            echo "Usage: ./build.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --gpu-miner    Build Rust+CUDA GPU miner (requires Rust and CUDA Toolkit)"
+            echo "  --help         Show this help message"
+            echo ""
+            exit 0
+            ;;
+    esac
+done
+
 # Create dist directory
 mkdir -p dist
 
@@ -142,6 +162,55 @@ echo "GPU Miner build complete!"
 echo ""
 
 # ============================================================================
+# BUILD RUST+CUDA GPU MINER (Optional - requires --gpu-miner flag)
+# ============================================================================
+if [ "$BUILD_GPU_MINER" = true ]; then
+    echo "Building Rust+CUDA GPU Miner..."
+
+    if [ -d "gpu-miner" ]; then
+        # Check for Rust
+        if command -v cargo &> /dev/null; then
+            # Check for CUDA
+            if command -v nvcc &> /dev/null; then
+                echo "  Found Rust and CUDA, building..."
+
+                (cd gpu-miner && cargo build --release 2>&1 | grep -E "(Compiling|Finished|error)" || true)
+
+                if [ $? -eq 0 ] && [ -f "gpu-miner/target/release/dilithium-gpu-miner" ]; then
+                    # Copy binary to dist
+                    mkdir -p dist
+
+                    # Determine platform-specific name
+                    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+                        cp gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-linux-amd64
+                    elif [[ "$OSTYPE" == "darwin"* ]]; then
+                        cp gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-darwin-amd64
+                    elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+                        cp gpu-miner/target/release/dilithium-gpu-miner.exe dist/dilithium-gpu-miner-cuda-windows-amd64.exe
+                    fi
+
+                    echo "  ✓ Rust+CUDA GPU Miner build complete!"
+                else
+                    echo "  ✗ Rust+CUDA GPU Miner build failed"
+                    exit 1
+                fi
+            else
+                echo "  ✗ CUDA not found - install CUDA Toolkit"
+                exit 1
+            fi
+        else
+            echo "  ✗ Rust not found - install from https://rustup.rs"
+            exit 1
+        fi
+    else
+        echo "  ✗ gpu-miner directory not found"
+        exit 1
+    fi
+
+    echo ""
+fi
+
+# ============================================================================
 # SUMMARY
 # ============================================================================
 echo "Build complete! Binaries in dist/ directory:"
@@ -149,6 +218,10 @@ echo ""
 ls -lh dist/ | tail -n +2 | awk '{print "  " $9 " (" $5 ")"}'
 echo ""
 echo "Usage:"
-echo "  Node:   ./dist/dilithium-darwin-amd64 --port 5001 --api-port 8001"
-echo "  CLI:    ./dist/dilithium-cli-darwin-amd64 wallet create"
-echo "  Miner:  ./dist/dilithium-miner-darwin-amd64 --node http://localhost:8001 --miner <address>"
+echo "  Node:      ./dist/dilithium-darwin-amd64 --port 5001 --api-port 8001"
+echo "  CLI:       ./dist/dilithium-cli-darwin-amd64 wallet create"
+echo "  Miner:     ./dist/dilithium-miner-darwin-amd64 --node http://localhost:8001 --miner <address>"
+echo ""
+echo "To build Rust+CUDA GPU miner:"
+echo "  ./build.sh --gpu-miner"
+echo "  (requires Rust toolchain and CUDA Toolkit)"
