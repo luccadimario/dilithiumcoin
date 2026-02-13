@@ -42,13 +42,13 @@ const (
 	// DAAForkHeight is the block height at which the per-block DAA activates.
 	// Before this height, the legacy 50-block adjustment algorithm is used.
 	// This enables a clean hard fork: nodes must upgrade before this height.
-	DAAForkHeight = 800
+	DAAForkHeight = 5800
 
 	// DAAv2ForkHeight is the block height at which difficulty-adjusted LWMA activates.
 	// Before this height, solve times are used raw. After this height, solve times are
 	// normalized by the difficulty they were mined at, preventing cascading oscillations
 	// when difficulty changes rapidly within the LWMA window.
-	DAAv2ForkHeight = 1000
+	DAAv2ForkHeight = 6500
 
 	// ============================================================================
 	// SUPPLY CONTROL (Bitcoin-like halving)
