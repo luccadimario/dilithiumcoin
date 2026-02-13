@@ -44,6 +44,12 @@ const (
 	// This enables a clean hard fork: nodes must upgrade before this height.
 	DAAForkHeight = 5800
 
+	// DAAv2ForkHeight is the block height at which difficulty-adjusted LWMA activates.
+	// Before this height, solve times are used raw. After this height, solve times are
+	// normalized by the difficulty they were mined at, preventing cascading oscillations
+	// when difficulty changes rapidly within the LWMA window.
+	DAAv2ForkHeight = 6500
+
 	// ============================================================================
 	// SUPPLY CONTROL (Bitcoin-like halving)
 	// ============================================================================
@@ -502,31 +508,26 @@ func (bc *Blockchain) calculateLegacyDifficultyBits() int {
 	return newBits
 }
 
-// calculateNewDifficultyBits computes new bit-based difficulty using LWMA (Linear Weighted Moving Average)
-// This is a per-block adjustment algorithm that responds quickly to hashrate changes.
-// Each bit step = 2x difficulty change (vs 16x per hex digit). Max adjustment = +/- 1 bit per block.
+// calculateNewDifficultyBits computes new bit-based difficulty using LWMA.
+// Post-DAAv2ForkHeight: uses difficulty-adjusted LWMA where solve times are normalized
+// by the difficulty they were mined at. This prevents cascading oscillations where fast
+// blocks at low difficulty fool the algorithm into thinking hashrate increased.
+// Pre-DAAv2ForkHeight: uses raw solve times with emergency -3/-2 adjustments.
+// Max adjustment = +/- 1 bit per block (post-v2), +1/-3 (pre-v2).
 func (bc *Blockchain) calculateNewDifficultyBits() int {
 	height := len(bc.Blocks)
-
-	// Current difficulty in bits (from blockchain state, not from blocks)
 	currentBits := bc.DifficultyBits
+	useV2 := height >= DAAv2ForkHeight
 
-	// Calculate weighted average of recent block solve times
-	var weightedSum int64
-	var totalWeight int64
-
-	// Cap individual solve times to prevent single outliers from dominating.
-	// A 10x target time cap prevents long gaps (e.g. when mining stops for hours)
-	// from causing emergency difficulty drops that cascade.
 	maxSolveTime := int64(TargetBlockTime) * 10
 
-	// Look at the last DAAWindow blocks and compute solve times.
-	// Only include post-fork blocks to prevent pre-fork timestamps from
-	// polluting the LWMA during the fork transition.
+	var weightedSum float64
+	var totalWeight float64
+
 	for i := 0; i < DAAWindow; i++ {
 		blockIndex := height - DAAWindow + i
 		if blockIndex <= 0 || blockIndex < DAAForkHeight {
-			continue // Skip pre-fork blocks and genesis
+			continue
 		}
 
 		currentBlock := bc.Blocks[blockIndex]
@@ -534,58 +535,77 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 
 		solveTime := currentBlock.Timestamp - previousBlock.Timestamp
 		if solveTime <= 0 {
-			solveTime = 1 // Prevent division by zero or negative times
+			solveTime = 1
 		}
 		if solveTime > maxSolveTime {
-			solveTime = maxSolveTime // Cap outliers
+			solveTime = maxSolveTime
 		}
 
-		// Weight recent blocks more heavily: weight = i+1 (1 for oldest, DAAWindow for newest)
-		weight := int64(i + 1)
-		weightedSum += solveTime * weight
+		adjustedTime := float64(solveTime)
+
+		// Post-v2: normalize solve time to current difficulty level
+		if useV2 {
+			blockBits := currentBlock.getEffectiveDifficultyBits()
+			diffDelta := currentBits - blockBits
+			if diffDelta > 0 {
+				adjustedTime *= float64(int64(1) << diffDelta)
+			} else if diffDelta < 0 {
+				adjustedTime /= float64(int64(1) << (-diffDelta))
+			}
+			if adjustedTime > float64(maxSolveTime) {
+				adjustedTime = float64(maxSolveTime)
+			}
+			if adjustedTime < 1 {
+				adjustedTime = 1
+			}
+		}
+
+		weight := float64(i + 1)
+		weightedSum += adjustedTime * weight
 		totalWeight += weight
 	}
 
 	if totalWeight == 0 {
-		// Not enough post-fork blocks yet — hold current difficulty
 		return currentBits
 	}
 
-	// Calculate weighted average block time
-	weightedAvg := float64(weightedSum) / float64(totalWeight)
+	weightedAvg := weightedSum / totalWeight
 
-	// Determine adjustment based on weighted average
-	// Normal mode: +/- 1 bit. Emergency mode: up to -3 bits if severely stuck.
 	var adjustment int
-	if weightedAvg < float64(TargetBlockTime)*0.7 {
-		// Mining too fast — increase difficulty by 1 bit
-		adjustment = 1
-	} else if weightedAvg > float64(TargetBlockTime)*5.0 {
-		// EMERGENCY: blocks taking 5x+ target time — drop 3 bits (8x easier)
-		adjustment = -3
-	} else if weightedAvg > float64(TargetBlockTime)*3.0 {
-		// SEVERE: blocks taking 3x+ target time — drop 2 bits (4x easier)
-		adjustment = -2
-	} else if weightedAvg > float64(TargetBlockTime)*1.3 {
-		// Mining too slow — decrease difficulty by 1 bit
-		adjustment = -1
+	if useV2 {
+		// Post-v2: symmetric +/- 1 bit only
+		if weightedAvg < float64(TargetBlockTime)*0.7 {
+			adjustment = 1
+		} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+			adjustment = -1
+		}
 	} else {
-		// Within acceptable range — no change
-		adjustment = 0
+		// Pre-v2: asymmetric with emergency drops
+		if weightedAvg < float64(TargetBlockTime)*0.7 {
+			adjustment = 1
+		} else if weightedAvg > float64(TargetBlockTime)*5.0 {
+			adjustment = -3
+		} else if weightedAvg > float64(TargetBlockTime)*3.0 {
+			adjustment = -2
+		} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+			adjustment = -1
+		}
 	}
 
 	newBits := currentBits + adjustment
 
-	// Clamp to min/max
 	if newBits < MinDifficultyBits {
 		newBits = MinDifficultyBits
 	} else if newBits > MaxDifficultyBits {
 		newBits = MaxDifficultyBits
 	}
 
-	// Log the adjustment
 	if newBits != currentBits {
-		fmt.Printf("=== DIFFICULTY ADJUSTMENT (Per-Block DAA) ===\n")
+		daaVersion := "v1"
+		if useV2 {
+			daaVersion = "v2"
+		}
+		fmt.Printf("=== DIFFICULTY ADJUSTMENT (Per-Block DAA %s) ===\n", daaVersion)
 		fmt.Printf("  Block height: %d\n", height)
 		fmt.Printf("  Weighted avg block time: %.1fs (target %ds)\n", weightedAvg, TargetBlockTime)
 		fmt.Printf("  DifficultyBits: %d -> %d (hex digits: %d -> %d)\n",
@@ -598,11 +618,10 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 		}
 		fmt.Printf("=============================================\n")
 	} else {
-		fmt.Printf("Difficulty check at height %d: no change (bits=%d, weighted avg=%.1fs/block)\n",
+		fmt.Printf("Difficulty check at height %d: no change (bits=%d, adj avg=%.1fs/block)\n",
 			height, currentBits, weightedAvg)
 	}
 
-	// Update the blockchain's tracked difficulty
 	bc.DifficultyBits = newBits
 
 	return newBits
@@ -715,21 +734,20 @@ func (bc *Blockchain) recalcLegacyDifficulty(height int) {
 }
 
 // recalcLWMADifficulty uses the post-fork LWMA algorithm (called during chain sync)
+// Applies difficulty-adjusted normalization post-DAAv2ForkHeight.
 func (bc *Blockchain) recalcLWMADifficulty(height int) {
-	// Use the previous block's difficulty as baseline, not bc.DifficultyBits
-	// which may have been set from a later anchor block during sync
 	currentBits := bc.Blocks[height-1].getEffectiveDifficultyBits()
+	useV2 := height >= DAAv2ForkHeight
 
-	var weightedSum int64
-	var totalWeight int64
-
-	// Same caps and fork-awareness as calculateNewDifficultyBits
 	maxSolveTime := int64(TargetBlockTime) * 10
+
+	var weightedSum float64
+	var totalWeight float64
 
 	for i := 0; i < DAAWindow; i++ {
 		blockIndex := height - DAAWindow + i
 		if blockIndex <= 0 || blockIndex < DAAForkHeight {
-			continue // Skip pre-fork blocks
+			continue
 		}
 
 		solveTime := bc.Blocks[blockIndex].Timestamp - bc.Blocks[blockIndex-1].Timestamp
@@ -740,13 +758,30 @@ func (bc *Blockchain) recalcLWMADifficulty(height int) {
 			solveTime = maxSolveTime
 		}
 
-		weight := int64(i + 1)
-		weightedSum += solveTime * weight
+		adjustedTime := float64(solveTime)
+
+		if useV2 {
+			blockBits := bc.Blocks[blockIndex].getEffectiveDifficultyBits()
+			diffDelta := currentBits - blockBits
+			if diffDelta > 0 {
+				adjustedTime *= float64(int64(1) << diffDelta)
+			} else if diffDelta < 0 {
+				adjustedTime /= float64(int64(1) << (-diffDelta))
+			}
+			if adjustedTime > float64(maxSolveTime) {
+				adjustedTime = float64(maxSolveTime)
+			}
+			if adjustedTime < 1 {
+				adjustedTime = 1
+			}
+		}
+
+		weight := float64(i + 1)
+		weightedSum += adjustedTime * weight
 		totalWeight += weight
 	}
 
 	if totalWeight == 0 {
-		// Not enough post-fork blocks — hold current difficulty
 		bc.Difficulty = difficultyBitsToHexDigits(currentBits)
 		bc.lastAdjustmentHeight = 0
 		fmt.Printf("Recalculated difficulty from chain (LWMA): %d bits at height %d (no post-fork blocks in window)\n",
@@ -754,17 +789,25 @@ func (bc *Blockchain) recalcLWMADifficulty(height int) {
 		return
 	}
 
-	weightedAvg := float64(weightedSum) / float64(totalWeight)
+	weightedAvg := weightedSum / totalWeight
 
 	var adjustment int
-	if weightedAvg < float64(TargetBlockTime)*0.7 {
-		adjustment = 1
-	} else if weightedAvg > float64(TargetBlockTime)*5.0 {
-		adjustment = -3
-	} else if weightedAvg > float64(TargetBlockTime)*3.0 {
-		adjustment = -2
-	} else if weightedAvg > float64(TargetBlockTime)*1.3 {
-		adjustment = -1
+	if useV2 {
+		if weightedAvg < float64(TargetBlockTime)*0.7 {
+			adjustment = 1
+		} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+			adjustment = -1
+		}
+	} else {
+		if weightedAvg < float64(TargetBlockTime)*0.7 {
+			adjustment = 1
+		} else if weightedAvg > float64(TargetBlockTime)*5.0 {
+			adjustment = -3
+		} else if weightedAvg > float64(TargetBlockTime)*3.0 {
+			adjustment = -2
+		} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+			adjustment = -1
+		}
 	}
 
 	newBits := currentBits + adjustment

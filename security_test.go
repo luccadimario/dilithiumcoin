@@ -395,11 +395,20 @@ func TestPerBlockDAAProductionRecovery(t *testing.T) {
 
 	baseTime := int64(1770900000)
 
-	// First build 20 blocks at ~5 seconds each (when mining was fast at lower difficulty)
-	for i := 1; i <= 10; i++ {
+	// Fill chain up to DAAForkHeight
+	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+
+	// Build 10 fast blocks at 5s each above fork height
+	for i := 0; i < 10; i++ {
+		idx := DAAForkHeight + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + int64(i)*5,
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*5,
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     9,
 			DifficultyBits: 38,
@@ -409,10 +418,12 @@ func TestPerBlockDAAProductionRecovery(t *testing.T) {
 		bc.Blocks = append(bc.Blocks, block)
 	}
 	// Then blocks get slower as difficulty bites
-	for i := 11; i <= 25; i++ {
+	lastTs := bc.Blocks[len(bc.Blocks)-1].Timestamp
+	for i := 0; i < 15; i++ {
+		idx := DAAForkHeight + 10 + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + 50 + int64(i-10)*300, // 5 min per block
+			Index:          int64(idx),
+			Timestamp:      lastTs + int64(i+1)*300, // 5 min per block
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     9,
 			DifficultyBits: 38,
@@ -504,12 +515,21 @@ func TestPerBlockDAAFastBlocks(t *testing.T) {
 	bc := NewBlockchain(2)
 	bc.DifficultyBits = 24
 
-	// Build a chain with 25 blocks at 10 seconds each (too fast, target is 60s)
+	// Build a chain starting above DAAForkHeight with 10s blocks (too fast)
 	baseTime := int64(1700000000)
-	for i := 1; i <= DAAWindow+5; i++ {
+	// Fill chain up to DAAForkHeight with placeholder blocks
+	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+	// Add DAAWindow+5 blocks at 10s each above the fork
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAForkHeight + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + int64(i)*10, // 10s per block
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*10,
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     6,
 			DifficultyBits: 24,
@@ -530,12 +550,18 @@ func TestPerBlockDAASlowBlocks(t *testing.T) {
 	bc := NewBlockchain(2)
 	bc.DifficultyBits = 30
 
-	// Build a chain with 25 blocks at 120 seconds each (too slow)
 	baseTime := int64(1700000000)
-	for i := 1; i <= DAAWindow+5; i++ {
+	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAForkHeight + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + int64(i)*120, // 120s per block
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*120,
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     7,
 			DifficultyBits: 30,
@@ -556,12 +582,19 @@ func TestPerBlockDAAEmergencyDrop(t *testing.T) {
 	bc := NewBlockchain(2)
 	bc.DifficultyBits = 38
 
-	// Build a chain with 25 blocks at 600 seconds each (10 min, 10x target = emergency)
+	// DAAv1 (pre-DAAv2ForkHeight): emergency -3 at 5x+ target
 	baseTime := int64(1700000000)
-	for i := 1; i <= DAAWindow+5; i++ {
+	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAForkHeight + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + int64(i)*600, // 600s per block
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*600,
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     9,
 			DifficultyBits: 38,
@@ -582,12 +615,18 @@ func TestPerBlockDAANormalBlocks(t *testing.T) {
 	bc := NewBlockchain(2)
 	bc.DifficultyBits = 24
 
-	// Build a chain with 25 blocks at 55 seconds each (within range)
 	baseTime := int64(1700000000)
-	for i := 1; i <= DAAWindow+5; i++ {
+	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAForkHeight + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + int64(i)*55, // 55s per block - within 0.7-1.3 range
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*55,
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     6,
 			DifficultyBits: 24,
@@ -608,12 +647,19 @@ func TestPerBlockDAASevereDrop(t *testing.T) {
 	bc := NewBlockchain(2)
 	bc.DifficultyBits = 32
 
-	// Build a chain with 25 blocks at 240 seconds each (4x target = severe)
+	// DAAv1 (pre-DAAv2ForkHeight): severe -2 at 3x+ target
 	baseTime := int64(1700000000)
-	for i := 1; i <= DAAWindow+5; i++ {
+	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAForkHeight + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + int64(i)*240, // 240s per block
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*240,
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     8,
 			DifficultyBits: 32,
@@ -634,12 +680,18 @@ func TestPerBlockDAAMinClamp(t *testing.T) {
 	bc := NewBlockchain(2)
 	bc.DifficultyBits = MinDifficultyBits
 
-	// Build a chain with very slow blocks — should not go below MinDifficultyBits
 	baseTime := int64(1700000000)
-	for i := 1; i <= DAAWindow+5; i++ {
+	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAForkHeight + i
 		block := &Block{
-			Index:          int64(i),
-			Timestamp:      baseTime + int64(i)*600,
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*600,
 			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
 			Difficulty:     MinDifficulty,
 			DifficultyBits: MinDifficultyBits,
@@ -652,6 +704,99 @@ func TestPerBlockDAAMinClamp(t *testing.T) {
 	bits := bc.calculateNewDifficultyBits()
 	if bits < MinDifficultyBits {
 		t.Errorf("DAA went below min: got %d bits, want >= %d", bits, MinDifficultyBits)
+	}
+}
+
+func TestDAAv2DifficultyAdjustedLWMA(t *testing.T) {
+	t.Parallel()
+	bc := NewBlockchain(2)
+	bc.DifficultyBits = 36
+
+	// Build chain up to DAAv2ForkHeight with blocks at varying difficulties
+	// simulating a difficulty crash and recovery (the oscillation problem)
+	baseTime := int64(1700000000)
+	for i := len(bc.Blocks); i < DAAv2ForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+
+	// Add blocks: some at low difficulty (fast), some at high (slow)
+	// With v2, a 1s block at diff=28 should be normalized to ~256s at diff=36
+	// so it shouldn't drag the average down
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAv2ForkHeight + i
+		var blockTime int64
+		var bits int
+		if i < 10 {
+			// First 10 blocks: mined at diff=28 in 1s each (low diff, fast)
+			blockTime = 1
+			bits = 28
+		} else {
+			// Next blocks: mined at diff=36 in 60s each (normal)
+			blockTime = 60
+			bits = 36
+		}
+		block := &Block{
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAv2ForkHeight) + int64(i)*blockTime,
+			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
+			Difficulty:     difficultyBitsToHexDigits(bits),
+			DifficultyBits: bits,
+			Transactions:   []*Transaction{},
+		}
+		// Fix timestamps to be cumulative
+		if i > 0 {
+			prevTs := bc.Blocks[len(bc.Blocks)-1].Timestamp
+			block.Timestamp = prevTs + blockTime
+		}
+		block.Hash = block.CalculateHash()
+		bc.Blocks = append(bc.Blocks, block)
+	}
+
+	bits := bc.calculateNewDifficultyBits()
+
+	// With v2 normalization, the 1s blocks at diff=28 are scaled up to 256s at diff=36
+	// so the weighted average should be high, NOT triggering an increase
+	// Without normalization, the raw 1s blocks would make avg very low, triggering +1
+	// We expect no change or -1 (since normalized times are high)
+	if bits > bc.DifficultyBits {
+		t.Errorf("DAAv2 should not increase difficulty when low-diff blocks are normalized: got %d, had %d", bits, bc.DifficultyBits)
+	}
+}
+
+func TestDAAv2NoEmergencyDrop(t *testing.T) {
+	t.Parallel()
+	bc := NewBlockchain(2)
+	bc.DifficultyBits = 38
+
+	// Post-DAAv2: even with 600s blocks, max drop is -1 (no emergency -3)
+	baseTime := int64(1700000000)
+	for i := len(bc.Blocks); i < DAAv2ForkHeight; i++ {
+		bc.Blocks = append(bc.Blocks, &Block{
+			Index:     int64(i),
+			Timestamp: baseTime + int64(i),
+		})
+	}
+	for i := 0; i < DAAWindow+5; i++ {
+		idx := DAAv2ForkHeight + i
+		block := &Block{
+			Index:          int64(idx),
+			Timestamp:      baseTime + int64(DAAv2ForkHeight) + int64(i)*600,
+			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
+			Difficulty:     9,
+			DifficultyBits: 38,
+			Transactions:   []*Transaction{},
+		}
+		block.Hash = block.CalculateHash()
+		bc.Blocks = append(bc.Blocks, block)
+	}
+
+	bits := bc.calculateNewDifficultyBits()
+	// v2: max -1 per block, so should be 37 not 35
+	if bits != 37 {
+		t.Errorf("DAAv2 should max drop -1: got %d bits, want 37", bits)
 	}
 }
 

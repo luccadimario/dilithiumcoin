@@ -535,7 +535,7 @@ func (n *Node) cancelMining() {
 // VALIDATION
 // ============================================================================
 
-// isValidChain validates an entire blockchain
+// isValidChain validates an entire blockchain, including difficulty at each height
 func (n *Node) isValidChain(chain []*Block) bool {
 	if len(chain) == 0 {
 		return false
@@ -547,19 +547,160 @@ func (n *Node) isValidChain(chain []*Block) bool {
 		return false
 	}
 
+	// Track running difficulty state for validation (like Bitcoin does during IBD)
+	runningBits := chain[0].getEffectiveDifficultyBits()
+
 	for i := 1; i < len(chain); i++ {
 		if !n.isBlockValid(chain[i], chain[i-1]) {
 			return false
 		}
 
+		// Recompute expected difficulty at this height
+		expectedBits := computeExpectedDifficultyBits(chain, i, runningBits)
+
+		// Verify block's difficulty matches expected
+		blockBits := chain[i].getEffectiveDifficultyBits()
+		if blockBits != expectedBits {
+			fmt.Printf("Chain validation failed at block %d: difficulty %d bits, expected %d bits\n",
+				i, blockBits, expectedBits)
+			return false
+		}
+
+		runningBits = expectedBits
+
 		// Validate transactions in this block have sufficient funds
-		// Use blocks 0 to i-1 as the state before this block
 		if err := n.Blockchain.ValidateBlockTransactions(chain[i], chain[:i]); err != nil {
 			fmt.Printf("Chain validation failed at block %d: %v\n", i, err)
 			return false
 		}
 	}
 	return true
+}
+
+// computeExpectedDifficultyBits recomputes the expected difficulty for a block at the given
+// height, using only the chain data. This is used during chain sync validation (like Bitcoin's
+// IBD) to ensure no block has artificially low difficulty.
+func computeExpectedDifficultyBits(chain []*Block, height int, currentBits int) int {
+	// Before the DAA fork: legacy 50-block adjustment
+	if height < DAAForkHeight {
+		// Difficulty only changes at multiples of BlocksPerAdjustment
+		if height < BlocksPerAdjustment || height%BlocksPerAdjustment != 0 {
+			return currentBits
+		}
+
+		// Legacy algorithm: compare actual vs expected time
+		startBlock := chain[height-BlocksPerAdjustment]
+		endBlock := chain[height-1]
+		actualTime := endBlock.Timestamp - startBlock.Timestamp
+		if actualTime <= 0 {
+			actualTime = 1
+		}
+		expectedTime := int64(BlocksPerAdjustment * TargetBlockTime)
+
+		ratio := float64(expectedTime) / float64(actualTime)
+		if ratio > MaxAdjustmentFactor {
+			ratio = MaxAdjustmentFactor
+		} else if ratio < 1.0/MaxAdjustmentFactor {
+			ratio = 1.0 / MaxAdjustmentFactor
+		}
+
+		logRatio := math.Log2(ratio)
+		var adjustment int
+		if math.Abs(logRatio) < 0.25 {
+			adjustment = 0
+		} else {
+			adjustment = int(math.Round(logRatio))
+		}
+
+		newBits := currentBits + adjustment
+		if newBits < MinDifficultyBits {
+			newBits = MinDifficultyBits
+		} else if newBits > MaxDifficultyBits {
+			newBits = MaxDifficultyBits
+		}
+		return newBits
+	}
+
+	// Post-DAA fork: per-block LWMA
+	if height < DAAWindow {
+		return currentBits
+	}
+
+	useV2 := height >= DAAv2ForkHeight
+	maxSolveTime := int64(TargetBlockTime) * 10
+
+	var weightedSum float64
+	var totalWeight float64
+
+	for i := 0; i < DAAWindow; i++ {
+		blockIndex := height - DAAWindow + i
+		if blockIndex <= 0 || blockIndex < DAAForkHeight {
+			continue
+		}
+
+		solveTime := chain[blockIndex].Timestamp - chain[blockIndex-1].Timestamp
+		if solveTime <= 0 {
+			solveTime = 1
+		}
+		if solveTime > maxSolveTime {
+			solveTime = maxSolveTime
+		}
+
+		adjustedTime := float64(solveTime)
+
+		if useV2 {
+			blockBits := chain[blockIndex].getEffectiveDifficultyBits()
+			diffDelta := currentBits - blockBits
+			if diffDelta > 0 {
+				adjustedTime *= float64(int64(1) << diffDelta)
+			} else if diffDelta < 0 {
+				adjustedTime /= float64(int64(1) << (-diffDelta))
+			}
+			if adjustedTime > float64(maxSolveTime) {
+				adjustedTime = float64(maxSolveTime)
+			}
+			if adjustedTime < 1 {
+				adjustedTime = 1
+			}
+		}
+
+		weight := float64(i + 1)
+		weightedSum += adjustedTime * weight
+		totalWeight += weight
+	}
+
+	if totalWeight == 0 {
+		return currentBits
+	}
+
+	weightedAvg := weightedSum / totalWeight
+
+	var adjustment int
+	if useV2 {
+		if weightedAvg < float64(TargetBlockTime)*0.7 {
+			adjustment = 1
+		} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+			adjustment = -1
+		}
+	} else {
+		if weightedAvg < float64(TargetBlockTime)*0.7 {
+			adjustment = 1
+		} else if weightedAvg > float64(TargetBlockTime)*5.0 {
+			adjustment = -3
+		} else if weightedAvg > float64(TargetBlockTime)*3.0 {
+			adjustment = -2
+		} else if weightedAvg > float64(TargetBlockTime)*1.3 {
+			adjustment = -1
+		}
+	}
+
+	newBits := currentBits + adjustment
+	if newBits < MinDifficultyBits {
+		newBits = MinDifficultyBits
+	} else if newBits > MaxDifficultyBits {
+		newBits = MaxDifficultyBits
+	}
+	return newBits
 }
 
 // isBlockValid validates a single block against its predecessor
