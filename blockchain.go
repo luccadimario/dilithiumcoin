@@ -714,7 +714,7 @@ func (bc *Blockchain) recalcLegacyDifficulty(height int) {
 		newBits, bc.Difficulty, height)
 }
 
-// recalcLWMADifficulty uses the post-fork LWMA algorithm
+// recalcLWMADifficulty uses the post-fork LWMA algorithm (called during chain sync)
 func (bc *Blockchain) recalcLWMADifficulty(height int) {
 	// Use the previous block's difficulty as baseline, not bc.DifficultyBits
 	// which may have been set from a later anchor block during sync
@@ -723,15 +723,21 @@ func (bc *Blockchain) recalcLWMADifficulty(height int) {
 	var weightedSum int64
 	var totalWeight int64
 
+	// Same caps and fork-awareness as calculateNewDifficultyBits
+	maxSolveTime := int64(TargetBlockTime) * 10
+
 	for i := 0; i < DAAWindow; i++ {
 		blockIndex := height - DAAWindow + i
-		if blockIndex <= 0 {
-			continue
+		if blockIndex <= 0 || blockIndex < DAAForkHeight {
+			continue // Skip pre-fork blocks
 		}
 
 		solveTime := bc.Blocks[blockIndex].Timestamp - bc.Blocks[blockIndex-1].Timestamp
 		if solveTime <= 0 {
 			solveTime = 1
+		}
+		if solveTime > maxSolveTime {
+			solveTime = maxSolveTime
 		}
 
 		weight := int64(i + 1)
@@ -740,9 +746,10 @@ func (bc *Blockchain) recalcLWMADifficulty(height int) {
 	}
 
 	if totalWeight == 0 {
+		// Not enough post-fork blocks — hold current difficulty
 		bc.Difficulty = difficultyBitsToHexDigits(currentBits)
 		bc.lastAdjustmentHeight = 0
-		fmt.Printf("Recalculated difficulty from chain (LWMA): %d bits at height %d\n",
+		fmt.Printf("Recalculated difficulty from chain (LWMA): %d bits at height %d (no post-fork blocks in window)\n",
 			currentBits, height)
 		return
 	}
