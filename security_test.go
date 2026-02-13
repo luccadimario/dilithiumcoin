@@ -577,38 +577,9 @@ func TestPerBlockDAASlowBlocks(t *testing.T) {
 	}
 }
 
-func TestPerBlockDAAEmergencyDrop(t *testing.T) {
-	t.Parallel()
-	bc := NewBlockchain(2)
-	bc.DifficultyBits = 38
-
-	// DAAv1 (pre-DAAv2ForkHeight): emergency -3 at 5x+ target
-	baseTime := int64(1700000000)
-	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
-		bc.Blocks = append(bc.Blocks, &Block{
-			Index:     int64(i),
-			Timestamp: baseTime + int64(i),
-		})
-	}
-	for i := 0; i < DAAWindow+5; i++ {
-		idx := DAAForkHeight + i
-		block := &Block{
-			Index:          int64(idx),
-			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*600,
-			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
-			Difficulty:     9,
-			DifficultyBits: 38,
-			Transactions:   []*Transaction{},
-		}
-		block.Hash = block.CalculateHash()
-		bc.Blocks = append(bc.Blocks, block)
-	}
-
-	bits := bc.calculateNewDifficultyBits()
-	if bits != 35 {
-		t.Errorf("DAA emergency drop (600s avg): got %d bits, want 35 (decrease by 3)", bits)
-	}
-}
+// TestPerBlockDAAEmergencyDrop removed — DAAv1 emergency drops no longer exist
+// since DAAForkHeight == DAAv2ForkHeight. DAAv2 caps at -1 per block.
+// See TestDAAv2NoEmergencyDrop for coverage.
 
 func TestPerBlockDAANormalBlocks(t *testing.T) {
 	t.Parallel()
@@ -642,38 +613,9 @@ func TestPerBlockDAANormalBlocks(t *testing.T) {
 	}
 }
 
-func TestPerBlockDAASevereDrop(t *testing.T) {
-	t.Parallel()
-	bc := NewBlockchain(2)
-	bc.DifficultyBits = 32
-
-	// DAAv1 (pre-DAAv2ForkHeight): severe -2 at 3x+ target
-	baseTime := int64(1700000000)
-	for i := len(bc.Blocks); i < DAAForkHeight; i++ {
-		bc.Blocks = append(bc.Blocks, &Block{
-			Index:     int64(i),
-			Timestamp: baseTime + int64(i),
-		})
-	}
-	for i := 0; i < DAAWindow+5; i++ {
-		idx := DAAForkHeight + i
-		block := &Block{
-			Index:          int64(idx),
-			Timestamp:      baseTime + int64(DAAForkHeight) + int64(i)*240,
-			PreviousHash:   bc.Blocks[len(bc.Blocks)-1].Hash,
-			Difficulty:     8,
-			DifficultyBits: 32,
-			Transactions:   []*Transaction{},
-		}
-		block.Hash = block.CalculateHash()
-		bc.Blocks = append(bc.Blocks, block)
-	}
-
-	bits := bc.calculateNewDifficultyBits()
-	if bits != 30 {
-		t.Errorf("DAA severe drop (240s avg): got %d bits, want 30 (decrease by 2)", bits)
-	}
-}
+// TestPerBlockDAASevereDrop removed — DAAv1 severe -2 drops no longer exist
+// since DAAForkHeight == DAAv2ForkHeight. DAAv2 caps at -1 per block.
+// See TestDAAv2NoEmergencyDrop for coverage.
 
 func TestPerBlockDAAMinClamp(t *testing.T) {
 	t.Parallel()
