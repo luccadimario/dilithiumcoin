@@ -6,7 +6,7 @@ GPU-accelerated SHA-256 proof-of-work miner for the Dilithium blockchain. Uses C
 
 ### Option 1: Download pre-built binary (CPU mode)
 
-Download `dilithium-gpu-miner` from the [releases page](https://github.com/nicholasadamou/dilithium/releases), then:
+Download `dilithium-gpu-miner` from the [releases page](https://github.com/luccadimario/dilithiumcoin/releases), then:
 
 ```bash
 chmod +x dilithium-gpu-miner
