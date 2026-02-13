@@ -558,17 +558,20 @@ func (n *Node) isValidChain(chain []*Block) bool {
 		}
 
 		// Recompute expected difficulty at this height
-		expectedBits := computeExpectedDifficultyBits(chain, i, runningBits)
-
-		// Verify block's difficulty matches expected
 		blockBits := chain[i].getEffectiveDifficultyBits()
-		if blockBits != expectedBits {
-			fmt.Printf("Chain validation failed at block %d: difficulty %d bits, expected %d bits\n",
-				i, blockBits, expectedBits)
-			return false
+		if i >= DAAForkHeight {
+			// Strict difficulty validation only after DAA fork — before that,
+			// legacy nodes used varying algorithms and the chain is accepted history.
+			expectedBits := computeExpectedDifficultyBits(chain, i, runningBits)
+			if blockBits != expectedBits {
+				fmt.Printf("Chain validation failed at block %d: difficulty %d bits, expected %d bits\n",
+					i, blockBits, expectedBits)
+				return false
+			}
+			runningBits = expectedBits
+		} else {
+			runningBits = blockBits
 		}
-
-		runningBits = expectedBits
 
 		// Validate transactions in this block have sufficient funds
 		if err := n.Blockchain.ValidateBlockTransactions(chain[i], chain[:i]); err != nil {
