@@ -25,10 +25,11 @@ type Miner struct {
 	batchSize uint64
 
 	// Stats
-	blocksMined atomic.Int64
-	totalHashes atomic.Int64
-	earnings    atomic.Int64
-	startTime   time.Time
+	blocksMined  atomic.Int64
+	totalHashes  atomic.Int64
+	liveHashes   atomic.Int64 // current round in-progress hash count (for stats display)
+	earnings     atomic.Int64
+	startTime    time.Time
 
 	// Control
 	stopCh chan struct{}
@@ -352,6 +353,7 @@ func (m *Miner) mineWithWorkers(prefix, suffix []byte, diffBits int, templateHei
 			select {
 			case result := <-resultCh:
 				cancel()
+				m.liveHashes.Store(0)
 				m.totalHashes.Add(worker.HashCount.Load())
 
 				elapsed := time.Since(startTime).Seconds()
@@ -367,11 +369,13 @@ func (m *Miner) mineWithWorkers(prefix, suffix []byte, diffBits int, templateHei
 				if err == nil && currentHeight > templateHeight {
 					fmt.Printf("[~] Chain advanced to %d, restarting with new work...\n", currentHeight)
 					cancel()
+					m.liveHashes.Store(0)
 					m.totalHashes.Add(worker.HashCount.Load())
 					return MiningResult{}, false
 				}
 
 				hashes := worker.HashCount.Load()
+				m.liveHashes.Store(hashes)
 				elapsed := time.Since(startTime).Seconds()
 				if elapsed > 0 {
 					rate := float64(hashes) / elapsed
@@ -384,6 +388,7 @@ func (m *Miner) mineWithWorkers(prefix, suffix []byte, diffBits int, templateHei
 
 			case <-m.stopCh:
 				cancel()
+				m.liveHashes.Store(0)
 				m.totalHashes.Add(worker.HashCount.Load())
 				return MiningResult{}, false
 			}
@@ -418,6 +423,7 @@ func (m *Miner) mineWithWorkers(prefix, suffix []byte, diffBits int, templateHei
 			workerWg.Wait()
 
 			// Accumulate hash counts
+			m.liveHashes.Store(0)
 			for _, w := range workers {
 				m.totalHashes.Add(w.HashCount.Load())
 			}
@@ -437,6 +443,7 @@ func (m *Miner) mineWithWorkers(prefix, suffix []byte, diffBits int, templateHei
 				fmt.Printf("[~] Chain advanced to %d, restarting with new work...\n", currentHeight)
 				cancel()
 				workerWg.Wait()
+				m.liveHashes.Store(0)
 				for _, w := range workers {
 					m.totalHashes.Add(w.HashCount.Load())
 				}
@@ -448,6 +455,7 @@ func (m *Miner) mineWithWorkers(prefix, suffix []byte, diffBits int, templateHei
 			for _, w := range workers {
 				totalWorkerHashes += w.HashCount.Load()
 			}
+			m.liveHashes.Store(totalWorkerHashes)
 			elapsed := time.Since(startTime).Seconds()
 			if elapsed > 0 {
 				rate := float64(totalWorkerHashes) / elapsed
@@ -461,6 +469,7 @@ func (m *Miner) mineWithWorkers(prefix, suffix []byte, diffBits int, templateHei
 		case <-m.stopCh:
 			cancel()
 			workerWg.Wait()
+			m.liveHashes.Store(0)
 			for _, w := range workers {
 				m.totalHashes.Add(w.HashCount.Load())
 			}
@@ -480,7 +489,7 @@ func (m *Miner) statsLoop() {
 		select {
 		case <-ticker.C:
 			elapsed := time.Since(m.startTime).Seconds()
-			totalH := m.totalHashes.Load()
+			totalH := m.totalHashes.Load() + m.liveHashes.Load()
 			blocks := m.blocksMined.Load()
 			earn := m.earnings.Load()
 

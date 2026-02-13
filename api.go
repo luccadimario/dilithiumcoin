@@ -947,22 +947,41 @@ func (n *Node) handleExplorerStats(w http.ResponseWriter, r *http.Request) {
 	currentDifficulty := n.Blockchain.GetCurrentDifficulty()
 	currentDifficultyBits := n.Blockchain.GetCurrentDifficultyBits()
 
-	// Calculate average block time (last 10 blocks)
+	// Calculate average block time from recent blocks at the current difficulty.
+	// Only count blocks whose difficulty matches the current level so that
+	// fast ramp-up blocks from lower difficulties don't skew the estimate.
 	var avgBlockTime float64
+	var validSolveCount int
+	var totalSolveTime float64
 	if height > 1 {
-		numBlocks := 10
-		if height < numBlocks {
-			numBlocks = height - 1
+		maxLookback := 50
+		if height-1 < maxLookback {
+			maxLookback = height - 1
 		}
-		if numBlocks > 0 {
-			startBlock := blocks[height-numBlocks-1]
-			endBlock := blocks[height-1]
-			timeDiff := endBlock.Timestamp - startBlock.Timestamp
-			avgBlockTime = float64(timeDiff) / float64(numBlocks)
+		for i := height - 1; i > height-1-maxLookback && i > 0; i-- {
+			blockBits := blocks[i].getEffectiveDifficultyBits()
+			if blockBits != currentDifficultyBits {
+				continue
+			}
+			solveTime := float64(blocks[i].Timestamp - blocks[i-1].Timestamp)
+			if solveTime <= 0 {
+				solveTime = 1
+			}
+			totalSolveTime += solveTime
+			validSolveCount++
+		}
+		if validSolveCount > 0 {
+			avgBlockTime = totalSolveTime / float64(validSolveCount)
+		} else if maxLookback > 0 {
+			// Fallback: use last block's solve time
+			avgBlockTime = float64(blocks[height-1].Timestamp - blocks[height-2].Timestamp)
+			if avgBlockTime <= 0 {
+				avgBlockTime = float64(TargetBlockTime)
+			}
 		}
 	}
 
-	// Estimate hashrate using bit-based difficulty: 2^bits / avgBlockTime
+	// Estimate network hashrate: 2^bits / avgBlockTime
 	var estimatedHashrate float64
 	if avgBlockTime > 0 {
 		hashesPerBlock := math.Pow(2, float64(currentDifficultyBits))
