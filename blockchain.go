@@ -515,11 +515,18 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 	var weightedSum int64
 	var totalWeight int64
 
-	// Look at the last DAAWindow blocks and compute solve times
+	// Cap individual solve times to prevent single outliers from dominating.
+	// A 10x target time cap prevents long gaps (e.g. when mining stops for hours)
+	// from causing emergency difficulty drops that cascade.
+	maxSolveTime := int64(TargetBlockTime) * 10
+
+	// Look at the last DAAWindow blocks and compute solve times.
+	// Only include post-fork blocks to prevent pre-fork timestamps from
+	// polluting the LWMA during the fork transition.
 	for i := 0; i < DAAWindow; i++ {
 		blockIndex := height - DAAWindow + i
-		if blockIndex <= 0 {
-			continue // Skip if we don't have a previous block
+		if blockIndex <= 0 || blockIndex < DAAForkHeight {
+			continue // Skip pre-fork blocks and genesis
 		}
 
 		currentBlock := bc.Blocks[blockIndex]
@@ -529,6 +536,9 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 		if solveTime <= 0 {
 			solveTime = 1 // Prevent division by zero or negative times
 		}
+		if solveTime > maxSolveTime {
+			solveTime = maxSolveTime // Cap outliers
+		}
 
 		// Weight recent blocks more heavily: weight = i+1 (1 for oldest, DAAWindow for newest)
 		weight := int64(i + 1)
@@ -537,7 +547,7 @@ func (bc *Blockchain) calculateNewDifficultyBits() int {
 	}
 
 	if totalWeight == 0 {
-		// Should not happen, but safeguard
+		// Not enough post-fork blocks yet — hold current difficulty
 		return currentBits
 	}
 
