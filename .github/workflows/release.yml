@@ -61,6 +61,22 @@ jobs:
             done
           done
 
+          # GPU miner has its own go.mod (self-contained for users to copy & build with CUDA)
+          for platform in "${platforms[@]}"; do
+            IFS='/' read -r GOOS GOARCH <<< "$platform"
+            output="dist/dilithium-gpu-miner-${GOOS}-${GOARCH}"
+            if [ "$GOOS" = "windows" ]; then
+              output="${output}.exe"
+            fi
+            echo "Building dilithium-gpu-miner for ${GOOS}/${GOARCH}..."
+            cd cmd/dilithium-gpu-miner
+            env CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+              -ldflags "$LDFLAGS" \
+              -o "../../$output" \
+              .
+            cd ../..
+          done
+
       - name: Generate checksums
         run: |
           cd dist
@@ -72,8 +88,8 @@ jobs:
           name: core-binaries
           path: dist/*
 
-  # ── Wallet Desktop App (needs native UI libs per platform) ──
-  wallet-macos:
+  # ── Desktop GUI Apps (Wallet, Node, Miner — needs native UI libs per platform) ──
+  gui-macos:
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -92,45 +108,45 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      - name: Install frontend dependencies
-        run: cd cmd/dilithium-wallet/frontend && npm install
-
-      - name: Build wallet app
-        run: |
-          cd cmd/dilithium-wallet
-          wails build
-
-      - name: Find .app bundle and create DMG
+      - name: Build GUI apps
         run: |
           mkdir -p dist
+          apps=(
+            "dilithium-wallet:Dilithium-Wallet"
+            "dilithium-node-gui:Dilithium-Node"
+            "dilithium-miner-gui:Dilithium-Miner"
+          )
+          for app in "${apps[@]}"; do
+            IFS=':' read -r dir name <<< "$app"
+            echo "=== Building $name ==="
+            cd cmd/$dir/frontend && npm install && cd ../../..
+            cd cmd/$dir && wails build && cd ../..
 
-          # Find the .app bundle wherever Wails put it
-          APP_PATH=$(find cmd/dilithium-wallet/build/bin -name "*.app" -type d | head -1)
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: No .app bundle found. Contents of build/bin:"
-            ls -la cmd/dilithium-wallet/build/bin/
-            exit 1
-          fi
-          echo "Found app bundle: $APP_PATH"
+            # Find .app bundle and create DMG
+            APP_PATH=$(find cmd/$dir/build/bin -name "*.app" -type d | head -1)
+            if [ -z "$APP_PATH" ]; then
+              echo "ERROR: No .app bundle found for $dir"
+              ls -la cmd/$dir/build/bin/
+              exit 1
+            fi
+            echo "Found: $APP_PATH"
 
-          # Create a temporary directory for DMG contents
-          mkdir -p dmg-staging
-          cp -R "$APP_PATH" dmg-staging/
-          ln -s /Applications dmg-staging/Applications
+            rm -rf dmg-staging && mkdir dmg-staging
+            cp -R "$APP_PATH" dmg-staging/
+            ln -s /Applications dmg-staging/Applications
+            hdiutil create -volname "$name" \
+              -srcfolder dmg-staging \
+              -ov -format UDZO \
+              "dist/${name}-macOS.dmg"
+          done
 
-          # Create DMG
-          hdiutil create -volname "Dilithium Wallet" \
-            -srcfolder dmg-staging \
-            -ov -format UDZO \
-            "dist/Dilithium-Wallet-macOS.dmg"
-
-      - name: Upload macOS wallet
+      - name: Upload macOS GUI apps
         uses: actions/upload-artifact@v4
         with:
-          name: wallet-macos
-          path: dist/Dilithium-Wallet-macOS.dmg
+          name: gui-macos
+          path: dist/*-macOS.dmg
 
-  wallet-windows:
+  gui-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -154,13 +170,20 @@ jobs:
           Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "MicrosoftEdgeWebview2Setup.exe"
           Start-Process -FilePath "MicrosoftEdgeWebview2Setup.exe" -Args "/silent /install" -Wait
 
-      - name: Install frontend dependencies
-        run: cd cmd/dilithium-wallet/frontend && npm install
-
-      - name: Build wallet app
+      - name: Build Wallet
         run: |
-          cd cmd/dilithium-wallet
-          wails build -nsis
+          cd cmd/dilithium-wallet/frontend && npm install && cd ../../..
+          cd cmd/dilithium-wallet && wails build -nsis && cd ../..
+
+      - name: Build Node GUI
+        run: |
+          cd cmd/dilithium-node-gui/frontend && npm install && cd ../../..
+          cd cmd/dilithium-node-gui && wails build && cd ../..
+
+      - name: Build Miner GUI
+        run: |
+          cd cmd/dilithium-miner-gui/frontend && npm install && cd ../../..
+          cd cmd/dilithium-miner-gui && wails build && cd ../..
 
       - name: Copy artifacts
         run: |
@@ -169,14 +192,16 @@ jobs:
           if (Test-Path "cmd/dilithium-wallet/build/bin/dilithium-wallet-amd64-installer.exe") {
             cp cmd/dilithium-wallet/build/bin/dilithium-wallet-amd64-installer.exe dist/Dilithium-Wallet-Windows-Installer.exe
           }
+          cp cmd/dilithium-node-gui/build/bin/dilithium-node-gui.exe dist/Dilithium-Node-Windows.exe
+          cp cmd/dilithium-miner-gui/build/bin/dilithium-miner-gui.exe dist/Dilithium-Miner-Windows.exe
 
-      - name: Upload Windows wallet
+      - name: Upload Windows GUI apps
         uses: actions/upload-artifact@v4
         with:
-          name: wallet-windows
-          path: dist/Dilithium-Wallet-Windows*.exe
+          name: gui-windows
+          path: dist/Dilithium-*-Windows*.exe
 
-  wallet-linux:
+  gui-linux:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -200,29 +225,32 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-      - name: Install frontend dependencies
-        run: cd cmd/dilithium-wallet/frontend && npm install
-
-      - name: Build wallet app
-        run: |
-          cd cmd/dilithium-wallet
-          wails build
-
-      - name: Copy artifact
+      - name: Build GUI apps
         run: |
           mkdir -p dist
-          cp cmd/dilithium-wallet/build/bin/dilithium-wallet dist/Dilithium-Wallet-Linux-amd64
-          chmod +x dist/Dilithium-Wallet-Linux-amd64
+          apps=(
+            "dilithium-wallet:Dilithium-Wallet"
+            "dilithium-node-gui:Dilithium-Node"
+            "dilithium-miner-gui:Dilithium-Miner"
+          )
+          for app in "${apps[@]}"; do
+            IFS=':' read -r dir name <<< "$app"
+            echo "=== Building $name ==="
+            cd cmd/$dir/frontend && npm install && cd ../../..
+            cd cmd/$dir && wails build && cd ../..
+            cp cmd/$dir/build/bin/$dir dist/${name}-Linux-amd64
+            chmod +x dist/${name}-Linux-amd64
+          done
 
-      - name: Upload Linux wallet
+      - name: Upload Linux GUI apps
         uses: actions/upload-artifact@v4
         with:
-          name: wallet-linux
-          path: dist/Dilithium-Wallet-Linux-amd64
+          name: gui-linux
+          path: dist/*-Linux-amd64
 
   # ── Collect all artifacts and publish GitHub Release ──
   publish:
-    needs: [release, wallet-macos, wallet-windows, wallet-linux]
+    needs: [release, gui-macos, gui-windows, gui-linux]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -234,11 +262,11 @@ jobs:
         run: |
           mkdir -p dist
           cp artifacts/core-binaries/* dist/
-          cp artifacts/wallet-macos/* dist/
-          cp artifacts/wallet-windows/* dist/
-          cp artifacts/wallet-linux/* dist/
+          cp artifacts/gui-macos/* dist/
+          cp artifacts/gui-windows/* dist/
+          cp artifacts/gui-linux/* dist/
 
-          # Regenerate checksums with wallet files included
+          # Regenerate checksums with all files
           cd dist
           rm -f checksums-sha256.txt
           sha256sum * > checksums-sha256.txt
@@ -253,25 +281,29 @@ jobs:
           body: |
             ## Dilithium ${{ github.ref_name }}
 
-            ### Wallet (Desktop App)
+            ### Desktop Apps (GUI)
 
-            | Platform | Download |
-            |----------|----------|
-            | macOS (Universal) | `Dilithium-Wallet-macOS.dmg` |
-            | Windows | `Dilithium-Wallet-Windows.exe` |
-            | Linux x86_64 | `Dilithium-Wallet-Linux-amd64` |
+            | App | macOS | Windows | Linux x86_64 |
+            |-----|-------|---------|--------------|
+            | Wallet | `Dilithium-Wallet-macOS.dmg` | `Dilithium-Wallet-Windows.exe` | `Dilithium-Wallet-Linux-amd64` |
+            | Node Dashboard | `Dilithium-Node-macOS.dmg` | `Dilithium-Node-Windows.exe` | `Dilithium-Node-Linux-amd64` |
+            | Miner | `Dilithium-Miner-macOS.dmg` | `Dilithium-Miner-Windows.exe` | `Dilithium-Miner-Linux-amd64` |
 
-            > The wallet works standalone — no node required. It connects to the public Dilithium network automatically.
+            > **Wallet** works standalone — no node required. It connects to the public Dilithium network automatically.
+            > **Node Dashboard** connects to a local node's API to monitor peers, blocks, and mempool.
+            > **Miner** mines blocks with a built-in multi-threaded SHA-256 PoW engine.
 
-            ### Node / CLI / Miner
+            ### CLI Binaries (Node / CLI / Miner / GPU Miner)
 
-            | Platform | Node | CLI | Miner |
-            |----------|------|-----|-------|
-            | Linux x86_64 | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` |
-            | Linux ARM64 | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` |
-            | macOS x86_64 | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` |
-            | macOS ARM64 (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` |
-            | Windows x86_64 | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` |
+            | Platform | Node | CLI | Miner | GPU Miner |
+            |----------|------|-----|-------|-----------|
+            | Linux x86_64 | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` | `dilithium-gpu-miner-linux-amd64` |
+            | Linux ARM64 | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` | `dilithium-gpu-miner-linux-arm64` |
+            | macOS x86_64 | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` | `dilithium-gpu-miner-darwin-amd64` |
+            | macOS ARM64 (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` | `dilithium-gpu-miner-darwin-arm64` |
+            | Windows x86_64 | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` | `dilithium-gpu-miner-windows-amd64.exe` |
+
+            > **GPU Miner**: Pre-built binaries run in CPU mode. For NVIDIA GPU acceleration (~100x speedup), build locally with CUDA: `cd cmd/dilithium-gpu-miner && make gpu SM=86`
 
             ### Quick Start
 

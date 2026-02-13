@@ -112,6 +112,36 @@ echo "Miner build complete!"
 echo ""
 
 # ============================================================================
+# BUILD GPU MINER (CPU-only cross-compile — GPU users build locally with make gpu)
+# ============================================================================
+echo "Building GPU Miner..."
+for platform in "${platforms[@]}"
+do
+    IFS='/' read -r GOOS GOARCH <<< "$platform"
+
+    output_name="dilithium-gpu-miner-${GOOS}-${GOARCH}"
+
+    if [ "$GOOS" = "windows" ]; then
+        output_name="${output_name}.exe"
+    fi
+
+    echo "  Building for $GOOS/$GOARCH..."
+
+    (cd cmd/dilithium-gpu-miner && env CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
+        -ldflags "-X main.AppVersion=${VERSION}" \
+        -o ../../dist/$output_name \
+        .)
+
+    if [ $? -ne 0 ]; then
+        echo "Error building GPU Miner for $platform"
+        exit 1
+    fi
+done
+
+echo "GPU Miner build complete!"
+echo ""
+
+# ============================================================================
 # SUMMARY
 # ============================================================================
 echo "Build complete! Binaries in dist/ directory:"
