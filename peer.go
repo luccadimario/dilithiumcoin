@@ -948,6 +948,7 @@ func (pm *PeerManager) handleLegacyChain(peer *Peer, msg *P2PMessage) {
 		pm.node.cancelMining()
 
 		pm.node.Blockchain.Blocks = blocks
+		pm.node.Blockchain.persistChainFrom(0)
 		pm.node.Blockchain.recalcDifficultyFromChain()
 		pm.node.Blockchain.clearMempool()
 	} else if len(blocks) > len(pm.node.Blockchain.Blocks) {

@@ -173,6 +173,9 @@ type Blockchain struct {
 	balanceCache       map[string]int64 // address -> balance
 	balanceCacheHeight int              // chain height when cache was built
 	totalTxCache       int              // cached total transaction count
+
+	// Persistence
+	store *ChainStore // nil = no persistence (tests)
 }
 
 // NewBlockchain initializes a new blockchain with genesis block
@@ -183,6 +186,51 @@ func NewBlockchain(difficulty int) *Blockchain {
 		DifficultyBits:      hexDigitsToDifficultyBits(difficulty),
 		PendingTransactions: make([]*Transaction, 0),
 		Mempool:             make(map[string]*Transaction),
+	}
+}
+
+// SetStore attaches a ChainStore for disk persistence.
+// If the store contains a saved chain, it replaces the in-memory chain.
+func (bc *Blockchain) SetStore(store *ChainStore) error {
+	bc.store = store
+
+	blocks, err := store.LoadChain()
+	if err != nil {
+		return fmt.Errorf("failed to load chain from disk: %w", err)
+	}
+
+	if len(blocks) > 0 {
+		bc.Blocks = blocks
+		bc.recalcDifficultyFromChain()
+		fmt.Printf("Loaded %d blocks from disk (height %d)\n", len(blocks), blocks[len(blocks)-1].Index)
+	} else {
+		// First run — save genesis block
+		if err := store.SaveBlock(bc.Blocks[0]); err != nil {
+			return fmt.Errorf("failed to save genesis block: %w", err)
+		}
+		fmt.Println("Initialized chain storage with genesis block")
+	}
+
+	return nil
+}
+
+// persistBlock saves a single block to disk (if store is set).
+func (bc *Blockchain) persistBlock(block *Block) {
+	if bc.store == nil {
+		return
+	}
+	if err := bc.store.SaveBlock(block); err != nil {
+		fmt.Printf("WARNING: Failed to persist block %d: %v\n", block.Index, err)
+	}
+}
+
+// persistChainFrom saves all blocks from startIndex onward and prunes orphans.
+func (bc *Blockchain) persistChainFrom(startIndex int) {
+	if bc.store == nil {
+		return
+	}
+	if err := bc.store.SaveChain(bc.Blocks, startIndex); err != nil {
+		fmt.Printf("WARNING: Failed to persist chain from index %d: %v\n", startIndex, err)
 	}
 }
 
@@ -296,6 +344,7 @@ func (bc *Blockchain) MinePendingTransactionsWithCancel(minerAddress string, can
 	}
 
 	bc.Blocks = append(bc.Blocks, newBlock)
+	bc.persistBlock(newBlock)
 
 	// Clear mined transactions from mempool
 	bc.clearMinedTransactions(newBlock.Transactions)

@@ -31,6 +31,9 @@ func main() {
 	config.Chain.DefaultDifficulty = flags.Difficulty
 	config.MinerAddress = flags.Miner
 	config.AutoMine = flags.AutoMine
+	if flags.DataDir != "" {
+		config.DataDir = flags.DataDir
+	}
 
 	// Apply environment overrides
 	config.ApplyEnvOverrides()
@@ -51,6 +54,17 @@ func main() {
 
 	// Create node with blockchain
 	node := NewNode(config.P2PPort, config.Chain.DefaultDifficulty)
+
+	// Setup chain persistence
+	chainStore, err := NewChainStore(config.DataDir)
+	if err != nil {
+		fmt.Printf("Failed to create chain store: %v\n", err)
+		os.Exit(1)
+	}
+	if err := node.Blockchain.SetStore(chainStore); err != nil {
+		fmt.Printf("Failed to load chain from disk: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Create peer manager
 	peerConfig := &PeerConfig{

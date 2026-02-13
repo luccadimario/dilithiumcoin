@@ -315,6 +315,7 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 
 	// Add block to chain
 	n.Blockchain.Blocks = append(n.Blockchain.Blocks, &block)
+	n.Blockchain.persistBlock(&block)
 
 	// Remove mined transactions from our mempool
 	n.Blockchain.clearMinedTransactions(block.Transactions)
@@ -354,6 +355,7 @@ func (n *Node) handleChainMessage(msg Message, peerAddr string) {
 		n.cancelMining()
 
 		n.Blockchain.Blocks = chain
+		n.Blockchain.persistChainFrom(0)
 
 		// Recalculate DifficultyBits from the synced chain so it doesn't reset to default
 		n.Blockchain.recalcDifficultyFromChain()

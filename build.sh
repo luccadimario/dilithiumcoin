@@ -3,7 +3,7 @@
 # Dilithium Build Script
 # Builds binaries for multiple platforms
 
-VERSION="3.3.0"
+VERSION="3.3.1"
 PROJECT_NAME="dilithium"
 
 # Create dist directory
