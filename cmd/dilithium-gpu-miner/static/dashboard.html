@@ -292,12 +292,12 @@
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-label">Current Hashrate</div>
-                <div class="stat-value"><span id="hashrate">0.00</span><span class="stat-unit">MH/s</span></div>
+                <div class="stat-value"><span id="hashrate">0.00</span><span class="stat-unit" id="hashrate-unit">MH/s</span></div>
             </div>
 
             <div class="stat-card">
                 <div class="stat-label">Average Hashrate</div>
-                <div class="stat-value"><span id="avg-hashrate">0.00</span><span class="stat-unit">MH/s</span></div>
+                <div class="stat-value"><span id="avg-hashrate">0.00</span><span class="stat-unit" id="avg-hashrate-unit">MH/s</span></div>
             </div>
 
             <div class="stat-card">
@@ -487,20 +487,24 @@
                 const response = await fetch('/api/stats');
                 const data = await response.json();
 
-                // Get current hashrate from backend (this is instantaneous rate)
-                const currentHashrate = (data.hashrate / 1000000).toFixed(2);
+                // Get current hashrate from backend (raw H/s)
+                const rawHashrate = data.hashrate;
 
-                // Store this reading for averaging
-                hashrateReadings.push(parseFloat(currentHashrate));
+                // Store raw reading in MH/s for averaging
+                hashrateReadings.push(rawHashrate / 1e6);
                 if (hashrateReadings.length > maxReadings) {
-                    hashrateReadings.shift(); // Keep last 5 minutes
+                    hashrateReadings.shift();
                 }
 
-                // Calculate average of stored readings
-                let avgHashrate = '0.00';
+                // Format current hashrate with auto-scaling
+                const currentFormatted = formatHashrate(rawHashrate);
+
+                // Calculate average from stored readings (in MH/s)
+                let avgFormatted = { value: '0.00', unit: 'MH/s' };
                 if (hashrateReadings.length > 0) {
                     const sum = hashrateReadings.reduce((a, b) => a + b, 0);
-                    avgHashrate = (sum / hashrateReadings.length).toFixed(2);
+                    const avgMH = sum / hashrateReadings.length;
+                    avgFormatted = formatHashrate(avgMH * 1e6);
                 }
 
                 // Format earnings: show 1 decimal if needed, otherwise no decimals
@@ -510,8 +514,10 @@
                 }
 
                 // Update stat cards
-                document.getElementById('hashrate').textContent = currentHashrate;
-                document.getElementById('avg-hashrate').textContent = avgHashrate;
+                document.getElementById('hashrate').textContent = currentFormatted.value;
+                document.getElementById('hashrate-unit').textContent = currentFormatted.unit;
+                document.getElementById('avg-hashrate').textContent = avgFormatted.value;
+                document.getElementById('avg-hashrate-unit').textContent = avgFormatted.unit;
                 document.getElementById('blocks').textContent = data.blocks_mined;
                 document.getElementById('earnings').textContent = earningsDisplay;
                 document.getElementById('totalhashes').textContent = formatNumber(data.total_hashes);
@@ -529,8 +535,8 @@
                 document.getElementById('node').textContent = data.node_url;
                 document.getElementById('batchsize').textContent = formatNumber(data.batch_size);
 
-                // Update hashrate chart (use current hashrate to show fluctuations)
-                hashrateHistory.push(parseFloat(currentHashrate));
+                // Update hashrate chart (use current hashrate in MH/s for chart)
+                hashrateHistory.push(rawHashrate / 1e6);
                 if (hashrateHistory.length > maxHistory) {
                     hashrateHistory.shift();
                 }
@@ -580,6 +586,14 @@
                     }
                 }
             }
+        }
+
+        function formatHashrate(hashesPerSec) {
+            if (hashesPerSec >= 1e12) return { value: (hashesPerSec / 1e12).toFixed(2), unit: 'TH/s' };
+            if (hashesPerSec >= 1e9)  return { value: (hashesPerSec / 1e9).toFixed(2),  unit: 'GH/s' };
+            if (hashesPerSec >= 1e6)  return { value: (hashesPerSec / 1e6).toFixed(2),  unit: 'MH/s' };
+            if (hashesPerSec >= 1e3)  return { value: (hashesPerSec / 1e3).toFixed(2),  unit: 'KH/s' };
+            return { value: hashesPerSec.toFixed(2), unit: 'H/s' };
         }
 
         function formatNumber(num) {
