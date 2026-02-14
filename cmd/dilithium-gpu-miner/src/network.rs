@@ -11,6 +11,8 @@ pub struct Transaction {
     pub amount: i64,
     pub timestamp: i64,
     pub signature: String,
+    #[serde(default)]
+    pub public_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,7 +202,15 @@ impl NodeClient {
             return Ok(Vec::new());
         }
 
-        response.json().await.context("Failed to parse transactions")
+        let body: serde_json::Value = response.json().await.context("Failed to parse mempool response")?;
+
+        let txs = body
+            .get("data")
+            .and_then(|d| d.get("transactions"))
+            .and_then(|t| serde_json::from_value::<Vec<Transaction>>(t.clone()).ok())
+            .unwrap_or_default();
+
+        Ok(txs)
     }
 
     pub async fn check_connection(&self) -> Result<()> {
