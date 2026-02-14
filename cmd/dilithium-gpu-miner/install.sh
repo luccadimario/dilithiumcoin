@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Dilithium GPU Miner Installation Script
-# Installs the Rust+CUDA GPU miner with all dependencies
+# Installs the Rust+GPU miner with all dependencies
+# Supports CUDA (Linux/Windows) and Metal (macOS)
 
 set -e
 
@@ -28,23 +29,37 @@ fi
 echo "[*] Detected OS: $OS"
 echo ""
 
-# Check for CUDA
-echo "[*] Checking for CUDA..."
-if command -v nvcc &> /dev/null; then
-    CUDA_VERSION=$(nvcc --version | grep "release" | sed -n 's/.*release \([0-9.]*\).*/\1/p')
-    echo "    ✓ CUDA ${CUDA_VERSION} found"
+# Determine GPU backend
+GPU_BACKEND=""
+CARGO_FEATURES=""
+
+if [[ "$OS" == "macos" ]]; then
+    echo "[*] macOS detected - using Metal backend"
+    GPU_BACKEND="metal"
+    CARGO_FEATURES="--features metal"
 else
-    echo "    ✗ CUDA not found!"
-    echo ""
-    echo "Please install CUDA Toolkit from:"
-    echo "  https://developer.nvidia.com/cuda-downloads"
-    echo ""
-    read -p "Continue anyway? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
+    # Check for CUDA
+    echo "[*] Checking for CUDA..."
+    if command -v nvcc &> /dev/null; then
+        CUDA_VERSION=$(nvcc --version | grep "release" | sed -n 's/.*release \([0-9.]*\).*/\1/p')
+        echo "    ✓ CUDA ${CUDA_VERSION} found"
+        GPU_BACKEND="cuda"
+        CARGO_FEATURES="--features cuda"
+    else
+        echo "    ✗ CUDA not found!"
+        echo ""
+        echo "Please install CUDA Toolkit from:"
+        echo "  https://developer.nvidia.com/cuda-downloads"
+        echo ""
+        read -p "Continue anyway? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
     fi
 fi
+
+echo "[*] GPU backend: ${GPU_BACKEND:-none}"
 echo ""
 
 # Check for Rust
@@ -62,26 +77,28 @@ else
 fi
 echo ""
 
-# Check for C++ compiler
-echo "[*] Checking for C++ compiler..."
-if command -v g++ &> /dev/null || command -v clang++ &> /dev/null; then
-    echo "    ✓ C++ compiler found"
-else
-    echo "    ✗ C++ compiler not found!"
-    if [[ "$OS" == "linux" ]]; then
-        echo "Installing build-essential..."
-        sudo apt-get update
-        sudo apt-get install -y build-essential
+# Check for C++ compiler (only needed for CUDA)
+if [[ "$GPU_BACKEND" == "cuda" ]]; then
+    echo "[*] Checking for C++ compiler..."
+    if command -v g++ &> /dev/null || command -v clang++ &> /dev/null; then
+        echo "    ✓ C++ compiler found"
     else
-        echo "Please install a C++ compiler (GCC or Clang)"
-        exit 1
+        echo "    ✗ C++ compiler not found!"
+        if [[ "$OS" == "linux" ]]; then
+            echo "Installing build-essential..."
+            sudo apt-get update
+            sudo apt-get install -y build-essential
+        else
+            echo "Please install a C++ compiler (GCC or Clang)"
+            exit 1
+        fi
     fi
+    echo ""
 fi
-echo ""
 
 # Build the miner
-echo "[*] Building GPU miner..."
-cargo build --release
+echo "[*] Building GPU miner (${GPU_BACKEND:-no GPU} backend)..."
+cargo build --release $CARGO_FEATURES
 
 if [ $? -ne 0 ]; then
     echo "    ✗ Build failed!"
@@ -150,6 +167,7 @@ fi
 echo ""
 echo "======================================================="
 echo "   INSTALLATION COMPLETE!"
+echo "   Backend: ${GPU_BACKEND:-none}"
 echo "======================================================="
 echo ""
 echo "Usage:"

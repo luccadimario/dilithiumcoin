@@ -165,37 +165,48 @@ echo ""
 # BUILD RUST+CUDA GPU MINER (Optional - requires --gpu-miner flag)
 # ============================================================================
 if [ "$BUILD_GPU_MINER" = true ]; then
-    echo "Building Rust+CUDA GPU Miner..."
+    echo "Building Rust GPU Miner..."
 
     if [ -d "cmd/dilithium-gpu-miner" ]; then
         # Check for Rust
         if command -v cargo &> /dev/null; then
-            # Check for CUDA
-            if command -v nvcc &> /dev/null; then
+            # Detect GPU backend based on platform
+            GPU_FEATURES=""
+            GPU_BACKEND_NAME=""
+
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                GPU_FEATURES="--features metal"
+                GPU_BACKEND_NAME="metal"
+                echo "  macOS detected, using Metal backend"
+            elif command -v nvcc &> /dev/null; then
+                GPU_FEATURES="--features cuda"
+                GPU_BACKEND_NAME="cuda"
                 echo "  Found Rust and CUDA, building..."
-
-                (cd cmd/dilithium-gpu-miner && cargo build --release 2>&1 | grep -E "(Compiling|Finished|error)" || true)
-
-                if [ $? -eq 0 ] && [ -f "cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner" ]; then
-                    # Copy binary to dist
-                    mkdir -p dist
-
-                    # Determine platform-specific name
-                    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-                        cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-linux-amd64
-                    elif [[ "$OSTYPE" == "darwin"* ]]; then
-                        cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-darwin-amd64
-                    elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
-                        cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner.exe dist/dilithium-gpu-miner-cuda-windows-amd64.exe
-                    fi
-
-                    echo "  ✓ Rust+CUDA GPU Miner build complete!"
-                else
-                    echo "  ✗ Rust+CUDA GPU Miner build failed"
-                    exit 1
-                fi
             else
-                echo "  ✗ CUDA not found - install CUDA Toolkit"
+                echo "  ✗ No GPU backend available"
+                echo "    macOS: Metal is used automatically"
+                echo "    Linux/Windows: Install CUDA Toolkit"
+                exit 1
+            fi
+
+            (cd cmd/dilithium-gpu-miner && cargo build --release $GPU_FEATURES 2>&1 | grep -E "(Compiling|Finished|error)" || true)
+
+            if [ $? -eq 0 ] && [ -f "cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner" ]; then
+                # Copy binary to dist
+                mkdir -p dist
+
+                # Determine platform-specific name
+                if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+                    cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-${GPU_BACKEND_NAME}-linux-amd64
+                elif [[ "$OSTYPE" == "darwin"* ]]; then
+                    cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-${GPU_BACKEND_NAME}-darwin-arm64
+                elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+                    cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner.exe dist/dilithium-gpu-miner-${GPU_BACKEND_NAME}-windows-amd64.exe
+                fi
+
+                echo "  ✓ Rust+${GPU_BACKEND_NAME} GPU Miner build complete!"
+            else
+                echo "  ✗ Rust GPU Miner build failed"
                 exit 1
             fi
         else
@@ -222,6 +233,6 @@ echo "  Node:      ./dist/dilithium-darwin-amd64 --port 5001 --api-port 8001"
 echo "  CLI:       ./dist/dilithium-cli-darwin-amd64 wallet create"
 echo "  Miner:     ./dist/dilithium-miner-darwin-amd64 --node http://localhost:8001 --miner <address>"
 echo ""
-echo "To build Rust+CUDA GPU miner:"
+echo "To build Rust GPU miner:"
 echo "  ./build.sh --gpu-miner"
-echo "  (requires Rust toolchain and CUDA Toolkit)"
+echo "  (requires Rust toolchain; CUDA on Linux, Metal on macOS)"

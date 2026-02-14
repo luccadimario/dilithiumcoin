@@ -1,6 +1,6 @@
 // Mining coordinator
 
-use crate::cuda::GpuDevice;
+use crate::backend::{self, GpuBackend};
 use crate::network::{Block, BlockTemplate, NodeClient, Transaction};
 use crate::sha256::sha256_midstate;
 use crate::webui::MinerStats;
@@ -71,15 +71,19 @@ impl Miner {
         log::info!("[*] Connected to node at {}", self.node_url);
         log::info!("[*] Mining to wallet: {}", self.wallet_address);
 
-        // Initialize GPU once for the entire mining session
-        let _gpu_device = GpuDevice::new(self.device_id)
-            .context("Failed to initialize GPU")?;
+        // Initialize GPU backend
+        let gpu_backend = backend::create_backend(self.device_id)
+            .context("Failed to initialize GPU backend")?;
         log::info!(
-            "[GPU {}] Initialized with {} SMs, batch size: {}",
+            "[GPU {}] {} backend initialized with {} compute units, batch size: {}",
             self.device_id,
-            _gpu_device.get_sm_count(),
+            gpu_backend.name(),
+            gpu_backend.compute_unit_count(),
             self.batch_size
         );
+
+        // Wrap in Arc for sharing with spawn_blocking
+        let gpu_backend: Arc<dyn GpuBackend> = Arc::from(gpu_backend);
 
         // Wait for sync
         self.wait_for_sync(&client).await?;
@@ -147,16 +151,16 @@ impl Miner {
             let block = self.construct_block(&template, pending_txs);
 
             log::info!(
-                "[*] Mining block #{} | difficulty: {} bits ({} hex) | GPU device {}",
+                "[*] Mining block #{} | difficulty: {} bits ({} hex) | {} backend",
                 template.index,
                 template.difficulty_bits,
                 template.difficulty,
-                self.device_id
+                gpu_backend.name()
             );
 
             // Mine block
-            match self.mine_block(&block, &template).await {
-                Ok(Some((nonce, hash))) => {
+            match self.mine_block(&block, &template, &gpu_backend).await {
+                Ok(Some((nonce, hash, solved_block))) => {
                     // Verify block is still valid (chain might have advanced)
                     let current_height = client.get_current_height().await.unwrap_or(template.index);
                     if current_height != template.index {
@@ -164,8 +168,8 @@ impl Miner {
                         continue;
                     }
 
-                    // Set block fields
-                    let mut mined_block = block.clone();
+                    // Set block fields — use solved_block which has the correct timestamp
+                    let mut mined_block = solved_block;
                     mined_block.nonce = nonce as i64;
                     mined_block.hash = hex::encode(hash);
 
@@ -278,103 +282,124 @@ impl Miner {
         &self,
         block: &Block,
         template: &BlockTemplate,
-    ) -> Result<Option<(u64, [u8; 32])>> {
-        // Build hash input
-        let (prefix, suffix) = self.build_hash_input(block);
-
-        // Compute midstate
-        let midstate = sha256_midstate(&prefix);
-        let full_blocks_len = (prefix.len() / 64) * 64;
-        let tail = &prefix[full_blocks_len..];
-
-        log::info!(
-            "[*] Prefix: {} bytes | Midstate: {} blocks | Tail: {} bytes",
-            prefix.len(),
-            full_blocks_len / 64,
-            tail.len()
-        );
-
-        // Create worker (GPU is already initialized, worker just submits batches)
-        let hash_count = Arc::new(AtomicU64::new(0));
-        let worker_stop = Arc::new(AtomicBool::new(false));
-
-        let worker = GpuWorker::new(
-            self.batch_size,
-            hash_count.clone(),
-            worker_stop.clone(),
-        );
-
-        // Start mining in background
-        let midstate_copy = midstate;
-        let tail_copy = tail.to_vec();
-        let suffix_copy = suffix.clone();
-        let prefix_len = prefix.len() as u64;
-        let diff_bits = template.difficulty_bits;
-
-        let mut mining_handle = tokio::task::spawn_blocking(move || {
-            worker.mine(
-                &midstate_copy,
-                &tail_copy,
-                prefix_len,
-                &suffix_copy,
-                diff_bits,
-            )
-        });
-
-        // Monitor for stale work
+        gpu_backend: &Arc<dyn GpuBackend>,
+    ) -> Result<Option<(u64, [u8; 32], Block)>> {
         let start_time = Instant::now();
         let node_client = NodeClient::new(self.node_url.clone());
+        let cumulative_hashes = Arc::new(AtomicU64::new(0));
+        let base_total_hashes = self.total_hashes.load(Ordering::Relaxed);
+
+        // Mutable block for timestamp rotation
+        let mut rotated_block = block.clone();
 
         loop {
-            tokio::select! {
-                result = &mut mining_handle => {
-                    match result {
-                        Ok(Ok(Some(solution))) => {
-                            let elapsed = start_time.elapsed().as_secs_f64();
-                            let hashes = hash_count.load(Ordering::Relaxed);
-                            self.total_hashes.fetch_add(hashes, Ordering::Relaxed);
+            // Build hash input with current timestamp
+            let (prefix, suffix) = self.build_hash_input(&rotated_block);
 
-                            let hashrate = if elapsed > 0.0 {
-                                hashes as f64 / elapsed / 1e6
-                            } else {
-                                0.0
-                            };
+            // Compute midstate
+            let midstate = sha256_midstate(&prefix);
+            let full_blocks_len = (prefix.len() / 64) * 64;
+            let tail = &prefix[full_blocks_len..];
 
-                            log::info!("[+] Found hash after {} hashes ({:.2} MH/s)", hashes, hashrate);
-                            return Ok(Some((solution.nonce, solution.hash)));
-                        }
-                        Ok(Ok(None)) => {
-                            // Stopped
-                            return Ok(None);
-                        }
-                        Ok(Err(e)) => {
-                            return Err(e);
-                        }
-                        Err(e) => {
-                            anyhow::bail!("Worker panic: {}", e);
+            // Compute max nonce to stay on single-block SHA-256 fast path
+            let max_nonce_digits = 55_i32 - tail.len() as i32 - suffix.len() as i32;
+            let max_nonce = if max_nonce_digits >= 1 {
+                10u64.pow(max_nonce_digits as u32) - 1
+            } else {
+                u64::MAX
+            };
+
+            // Create worker for this rotation
+            let hash_count = Arc::new(AtomicU64::new(0));
+            let worker_stop = Arc::new(AtomicBool::new(false));
+
+            let worker = GpuWorker::new(
+                self.batch_size,
+                max_nonce,
+                hash_count.clone(),
+                worker_stop.clone(),
+            );
+
+            let midstate_copy = midstate;
+            let tail_copy = tail.to_vec();
+            let suffix_copy = suffix.clone();
+            let prefix_len = prefix.len() as u64;
+            let diff_bits = template.difficulty_bits;
+            let backend_clone = gpu_backend.clone();
+
+            let mut mining_handle = tokio::task::spawn_blocking(move || {
+                worker.mine(
+                    backend_clone.as_ref(),
+                    &midstate_copy,
+                    &tail_copy,
+                    prefix_len,
+                    &suffix_copy,
+                    diff_bits,
+                )
+            });
+
+            // Monitor for stale work or completion
+            loop {
+                tokio::select! {
+                    result = &mut mining_handle => {
+                        let hashes = hash_count.load(Ordering::Relaxed);
+                        cumulative_hashes.fetch_add(hashes, Ordering::Relaxed);
+
+                        match result {
+                            Ok(Ok(Some(solution))) => {
+                                let total = cumulative_hashes.load(Ordering::Relaxed);
+                                self.total_hashes.store(base_total_hashes + total, Ordering::Relaxed);
+                                let elapsed = start_time.elapsed().as_secs_f64();
+                                let hashrate = if elapsed > 0.0 { total as f64 / elapsed / 1e6 } else { 0.0 };
+                                log::info!("[+] Found hash after {} hashes ({:.2} MH/s)", total, hashrate);
+                                return Ok(Some((solution.nonce, solution.hash, rotated_block.clone())));
+                            }
+                            Ok(Ok(None)) => {
+                                if worker_stop.load(Ordering::Relaxed) {
+                                    // Stale work - return to main loop
+                                    let total = cumulative_hashes.load(Ordering::Relaxed);
+                                    self.total_hashes.store(base_total_hashes + total, Ordering::Relaxed);
+                                    return Ok(None);
+                                }
+                                // Nonce space exhausted - rotate timestamp and retry
+                                // (no network calls needed!)
+                                rotated_block.timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs() as i64;
+                                break; // break inner loop, restart with new prefix
+                            }
+                            Ok(Err(e)) => return Err(e),
+                            Err(e) => anyhow::bail!("Worker panic: {}", e),
                         }
                     }
-                }
 
-                _ = sleep(Duration::from_secs(3)) => {
-                    // Check if chain advanced past the block we're mining
-                    if let Ok(current_height) = node_client.get_current_height().await {
-                        if current_height > template.index {
-                            log::info!("[~] Chain advanced to {}, restarting...", current_height);
-                            worker_stop.store(true, Ordering::Relaxed);
-                            self.total_hashes.fetch_add(hash_count.load(Ordering::Relaxed), Ordering::Relaxed);
-                            return Ok(None);
+                    _ = sleep(Duration::from_secs(3)) => {
+                        // Check if chain advanced
+                        if let Ok(current_height) = node_client.get_current_height().await {
+                            if current_height > template.index {
+                                log::info!("[~] Chain advanced to {}, restarting...", current_height);
+                                worker_stop.store(true, Ordering::Relaxed);
+                                // Wait for worker to finish
+                                let _ = mining_handle.await;
+                                let total = cumulative_hashes.load(Ordering::Relaxed)
+                                    + hash_count.load(Ordering::Relaxed);
+                                self.total_hashes.store(base_total_hashes + total, Ordering::Relaxed);
+                                return Ok(None);
+                            }
                         }
-                    }
 
-                    // Print progress
-                    let hashes = hash_count.load(Ordering::Relaxed);
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    if elapsed > 0.0 {
-                        let hashrate = hashes as f64 / elapsed;
-                        // Update current hashrate for webui
-                        self.current_hashrate.store(hashrate as u64, Ordering::Relaxed);
-                        log::info!("[~] Hashrate: {:.2} MH/s | Hashes: {}", hashrate / 1e6, hashes);
+                        // Print progress (cumulative across rotations)
+                        let total = cumulative_hashes.load(Ordering::Relaxed)
+                            + hash_count.load(Ordering::Relaxed);
+                        // Keep session stats current
+                        self.total_hashes.store(base_total_hashes + total, Ordering::Relaxed);
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        if elapsed > 0.0 {
+                            let hashrate = total as f64 / elapsed;
+                            self.current_hashrate.store(hashrate as u64, Ordering::Relaxed);
+                            log::info!("[~] Hashrate: {:.2} MH/s | Hashes: {}", hashrate / 1e6, total);
+                        }
                     }
                 }
             }
