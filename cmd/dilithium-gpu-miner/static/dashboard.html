@@ -16,8 +16,8 @@
 
         body {
             font-family: 'Space Mono', monospace;
-            background: #000000;
-            color: #cbd5e1;
+            background: #030712;
+            color: #8494a7;
             min-height: 100vh;
             overflow-x: hidden;
             position: relative;
@@ -31,23 +31,25 @@
             width: 100%;
             height: 100%;
             z-index: 0;
+            pointer-events: none;
         }
 
-        /* Floating diamond */
-        #diamond {
+        /* Floating crystal */
+        .crystal {
             position: fixed;
-            top: 10%;
-            right: 10%;
-            width: 150px;
-            height: 150px;
+            top: 12%;
+            right: 8%;
+            width: 80px;
+            height: 80px;
             z-index: 1;
-            animation: float 6s ease-in-out infinite;
-            opacity: 0.3;
+            animation: crystal-float 8s ease-in-out infinite;
+            opacity: 0.25;
+            pointer-events: none;
         }
 
-        @keyframes float {
+        @keyframes crystal-float {
             0%, 100% { transform: translateY(0px) rotate(0deg); }
-            50% { transform: translateY(-30px) rotate(180deg); }
+            50% { transform: translateY(-20px) rotate(180deg); }
         }
 
         .container {
@@ -61,21 +63,24 @@
         header {
             text-align: center;
             padding: 40px 0 60px;
-            border-bottom: 1px solid rgba(100, 116, 139, 0.2);
+            border-bottom: 1px solid rgba(0, 191, 239, 0.1);
         }
 
         h1 {
             font-family: 'Orbitron', sans-serif;
             font-size: 3em;
             font-weight: 900;
-            color: #f8fafc;
+            background: linear-gradient(135deg, #22d3ee, #00bfef, #0891b2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
             margin-bottom: 10px;
             letter-spacing: 4px;
         }
 
         .subtitle {
             font-size: 0.95em;
-            color: #94a3b8;
+            color: #8494a7;
             font-weight: 400;
             margin-bottom: 20px;
         }
@@ -89,6 +94,7 @@
             padding: 8px 16px;
             border-radius: 6px;
             font-size: 0.85em;
+            color: #22c55e;
         }
 
         .status-dot {
@@ -112,25 +118,25 @@
         }
 
         .stat-card {
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid rgba(100, 116, 139, 0.3);
-            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(17, 24, 39, 0.8), rgba(30, 41, 59, 0.4));
+            border: 1px solid rgba(0, 191, 239, 0.15);
+            border-radius: 1rem;
             padding: 24px;
             backdrop-filter: blur(10px);
-            transition: all 0.3s ease;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
         }
 
         .stat-card:hover {
-            border-color: rgba(148, 163, 184, 0.5);
-            background: rgba(15, 23, 42, 0.85);
+            border-color: rgba(0, 191, 239, 0.4);
+            box-shadow: 0 0 20px rgba(0, 191, 239, 0.1);
             transform: translateY(-2px);
         }
 
         .stat-label {
-            font-size: 0.85em;
-            color: #94a3b8;
+            font-size: 0.75em;
+            color: #8494a7;
             text-transform: uppercase;
-            letter-spacing: 1.5px;
+            letter-spacing: 2px;
             margin-bottom: 12px;
         }
 
@@ -144,18 +150,24 @@
         .stat-unit {
             font-family: 'Space Mono', monospace;
             font-size: 0.45em;
-            color: #94a3b8;
+            color: #8494a7;
             font-weight: 400;
             margin-left: 4px;
         }
 
         .info-panel, .chart-container {
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid rgba(100, 116, 139, 0.3);
-            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(17, 24, 39, 0.8), rgba(30, 41, 59, 0.4));
+            border: 1px solid rgba(0, 191, 239, 0.15);
+            border-radius: 1rem;
             padding: 30px;
             margin: 30px 0;
             backdrop-filter: blur(10px);
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .info-panel:hover, .chart-container:hover {
+            border-color: rgba(0, 191, 239, 0.4);
+            box-shadow: 0 0 20px rgba(0, 191, 239, 0.1);
         }
 
         .info-panel h2, .chart-container h2 {
@@ -171,7 +183,7 @@
             display: flex;
             justify-content: space-between;
             padding: 16px 0;
-            border-bottom: 1px solid rgba(100, 116, 139, 0.2);
+            border-bottom: 1px solid rgba(0, 191, 239, 0.08);
         }
 
         .info-row:last-child {
@@ -179,19 +191,19 @@
         }
 
         .info-label {
-            color: #94a3b8;
+            color: #8494a7;
             font-weight: 400;
         }
 
         .info-value {
-            color: #f8fafc;
+            color: #22d3ee;
             font-weight: 700;
             word-break: break-all;
             text-align: right;
             max-width: 60%;
         }
 
-        /* Improved chart */
+        /* Chart */
         .chart {
             display: flex;
             align-items: flex-end;
@@ -203,30 +215,34 @@
 
         .chart-bar {
             flex: 1;
-            background: linear-gradient(to top, rgba(59, 130, 246, 0.6), rgba(99, 102, 241, 0.3));
+            background: linear-gradient(to top, rgba(0, 191, 239, 0.6), rgba(168, 85, 247, 0.3));
             border-radius: 4px 4px 0 0;
             min-height: 2px;
             transition: height 0.8s ease-in-out;
             position: relative;
         }
 
+        .chart-bar:hover {
+            background: linear-gradient(to top, rgba(0, 191, 239, 0.8), rgba(168, 85, 247, 0.5));
+        }
+
         footer {
             text-align: center;
             padding: 40px 0 20px;
-            border-top: 1px solid rgba(100, 116, 139, 0.2);
+            border-top: 1px solid rgba(0, 191, 239, 0.1);
             margin-top: 60px;
-            color: #64748b;
+            color: #8494a7;
             font-size: 0.9em;
         }
 
         footer a {
-            color: #94a3b8;
+            color: #8494a7;
             text-decoration: none;
             transition: color 0.2s ease;
         }
 
         footer a:hover {
-            color: #cbd5e1;
+            color: #22d3ee;
         }
 
         .footer-links {
@@ -235,6 +251,15 @@
             justify-content: center;
             gap: 24px;
             flex-wrap: wrap;
+        }
+
+        .footer-built {
+            margin-top: 20px;
+            font-size: 0.85em;
+            background: linear-gradient(135deg, #22d3ee, #00bfef, #0891b2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
 
         @media (max-width: 768px) {
@@ -255,34 +280,30 @@
                 max-width: 100%;
                 text-align: left;
             }
-
-            #diamond {
-                width: 100px;
-                height: 100px;
-                right: 5%;
-            }
         }
     </style>
 </head>
 <body>
     <canvas id="starfield"></canvas>
 
-    <svg id="diamond" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <svg class="crystal" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
         <defs>
-            <linearGradient id="diamondGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" style="stop-color:rgb(147,197,253);stop-opacity:0.8" />
-                <stop offset="100%" style="stop-color:rgb(99,102,241);stop-opacity:0.4" />
+            <linearGradient id="crystalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:0.9" />
+                <stop offset="50%" style="stop-color:#00bfef;stop-opacity:0.7" />
+                <stop offset="100%" style="stop-color:#0891b2;stop-opacity:0.5" />
             </linearGradient>
         </defs>
-        <polygon points="50,10 90,50 50,90 10,50" fill="url(#diamondGrad)" stroke="rgb(147,197,253)" stroke-width="1" opacity="0.6"/>
-        <polygon points="50,10 70,50 50,50" fill="rgba(255,255,255,0.3)"/>
-        <polygon points="50,10 30,50 50,50" fill="rgba(255,255,255,0.2)"/>
+        <polygon points="50,5 85,50 50,95 15,50" fill="url(#crystalGrad)" stroke="#22d3ee" stroke-width="0.5" opacity="0.7"/>
+        <polygon points="50,5 67,50 50,50" fill="rgba(255,255,255,0.25)"/>
+        <polygon points="50,5 33,50 50,50" fill="rgba(255,255,255,0.15)"/>
+        <polygon points="50,95 67,50 50,50" fill="rgba(0,191,239,0.15)"/>
     </svg>
 
     <div class="container">
         <header>
             <h1>DILITHIUM GPU MINER</h1>
-            <p class="subtitle">High-Performance Rust+CUDA Mining Client</p>
+            <p class="subtitle">Rust+CUDA Mining Client</p>
             <div class="status-badge">
                 <span class="status-dot"></span>
                 <span>Mining Active</span>
@@ -347,18 +368,18 @@
         </div>
 
         <footer>
-            <p>Dilithium GPU Miner v1.0.0 - Rust+CUDA Implementation</p>
+            <p>Dilithium GPU Miner v1.0.0 — Rust+CUDA</p>
             <div class="footer-links">
-                <a href="https://dilithiumcoin.com" target="_blank">Official Website</a>
-                <a href="https://github.com" target="_blank">GitHub</a>
-                <a href="https://dilithiumcoin.com" target="_blank">Documentation</a>
+                <a href="https://dilithiumcoin.com" target="_blank">Website</a>
+                <a href="https://github.com/luccadimario/dilithiumcoin" target="_blank">GitHub</a>
+                <a href="https://dilithiumcoin.com/docs" target="_blank">Docs</a>
             </div>
-            <p style="margin-top: 20px; font-size: 0.85em;">Built with crystalline precision</p>
+            <p class="footer-built">Built with crystalline precision</p>
         </footer>
     </div>
 
     <script>
-        // Starfield effect
+        // Starfield — matches website's 3D parallax style
         const canvas = document.getElementById('starfield');
         const ctx = canvas.getContext('2d');
 
@@ -366,98 +387,57 @@
         canvas.height = window.innerHeight;
 
         const stars = [];
-        const shootingStars = [];
-        const numStars = 200;
+        const numStars = 400;
 
         class Star {
-            constructor() {
-                this.x = Math.random() * canvas.width;
-                this.y = Math.random() * canvas.height;
-                this.size = Math.random() * 2;
-                this.speedX = (Math.random() - 0.5) * 0.3;
-                this.speedY = (Math.random() - 0.5) * 0.3;
-                this.opacity = Math.random();
-                this.opacityChange = (Math.random() - 0.5) * 0.01;
-            }
-
-            update() {
-                this.x += this.speedX;
-                this.y += this.speedY;
-                this.opacity += this.opacityChange;
-
-                if (this.opacity <= 0 || this.opacity >= 1) {
-                    this.opacityChange *= -1;
-                }
-
-                if (this.x < 0) this.x = canvas.width;
-                if (this.x > canvas.width) this.x = 0;
-                if (this.y < 0) this.y = canvas.height;
-                if (this.y > canvas.height) this.y = 0;
-            }
-
-            draw() {
-                ctx.fillStyle = `rgba(255, 255, 255, ${this.opacity})`;
-                ctx.beginPath();
-                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-                ctx.fill();
-            }
-        }
-
-        class ShootingStar {
             constructor() {
                 this.reset();
             }
 
             reset() {
-                this.x = Math.random() * canvas.width;
-                this.y = Math.random() * canvas.height / 2;
-                this.length = Math.random() * 80 + 40;
-                this.speedX = Math.random() * 10 + 10;
-                this.speedY = Math.random() * 10 + 10;
-                this.opacity = 1;
+                this.x = (Math.random() - 0.5) * canvas.width * 2;
+                this.y = (Math.random() - 0.5) * canvas.height * 2;
+                this.z = Math.random() * 1000;
+                this.size = Math.random() * 1.5 + 0.5;
             }
 
             update() {
-                this.x += this.speedX;
-                this.y += this.speedY;
-                this.opacity -= 0.02;
-
-                if (this.opacity <= 0 || this.x > canvas.width || this.y > canvas.height) {
-                    this.reset();
-                }
+                this.z -= 0.3;
+                if (this.z <= 0) this.reset();
             }
 
             draw() {
-                ctx.save();
-                ctx.strokeStyle = `rgba(147, 197, 253, ${this.opacity})`;
-                ctx.lineWidth = 2;
+                const factor = 600 / this.z;
+                const sx = this.x * factor + canvas.width / 2;
+                const sy = this.y * factor + canvas.height / 2;
+
+                if (sx < -10 || sx > canvas.width + 10 || sy < -10 || sy > canvas.height + 10) return;
+
+                const alpha = Math.min((1000 - this.z) / 1000, 0.25);
+                const size = this.size * factor * 0.5;
+
+                // Subtle cyan tint for closer stars
+                const closeness = 1 - this.z / 1000;
+                const r = Math.round(255 - closeness * 30);
+                const g = Math.round(255 - closeness * 10);
+                const b = 255;
+
+                ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
                 ctx.beginPath();
-                ctx.moveTo(this.x, this.y);
-                ctx.lineTo(this.x - this.length, this.y - this.length);
-                ctx.stroke();
-                ctx.restore();
+                ctx.arc(sx, sy, Math.max(size, 0.5), 0, Math.PI * 2);
+                ctx.fill();
             }
         }
 
-        // Create stars
         for (let i = 0; i < numStars; i++) {
             stars.push(new Star());
         }
 
-        // Create shooting stars
-        for (let i = 0; i < 3; i++) {
-            shootingStars.push(new ShootingStar());
-        }
-
         function animateStars() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'rgba(3, 7, 18, 0.15)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
 
             stars.forEach(star => {
-                star.update();
-                star.draw();
-            });
-
-            shootingStars.forEach(star => {
                 star.update();
                 star.draw();
             });
@@ -472,7 +452,7 @@
             canvas.height = window.innerHeight;
         });
 
-        // Hashrate history - improved to prevent flickering
+        // Hashrate history
         const hashrateHistory = [];
         const maxHistory = 30;
         let chartBars = [];
