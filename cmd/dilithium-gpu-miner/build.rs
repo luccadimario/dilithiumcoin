@@ -32,11 +32,16 @@ fn main() {
     println!("cargo:rustc-link-lib=cudart");
 
     // Compile CUDA bridge
+    // Work around glibc _Float32/_Float64 types that NVCC doesn't understand
     cc::Build::new()
         .cuda(true)
         .flag("-allow-unsupported-compiler")
         .flag("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
-        .flag("-D__STRICT_ANSI__")
+        .flag("-D_Float32=float")
+        .flag("-D_Float64=double")
+        .flag("-D_Float128=double")
+        .flag("-D_Float32x=double")
+        .flag("-D_Float64x=double")
         .flag(&format!("-arch={}", sm_arch))
         .flag("-O3")
         .flag("--use_fast_math")
