@@ -1,5 +1,6 @@
 // Mining coordinator
 
+use crate::cuda::GpuDevice;
 use crate::network::{Block, BlockTemplate, NodeClient, Transaction};
 use crate::sha256::sha256_midstate;
 use crate::webui::MinerStats;
@@ -69,6 +70,16 @@ impl Miner {
 
         log::info!("[*] Connected to node at {}", self.node_url);
         log::info!("[*] Mining to wallet: {}", self.wallet_address);
+
+        // Initialize GPU once for the entire mining session
+        let _gpu_device = GpuDevice::new(self.device_id)
+            .context("Failed to initialize GPU")?;
+        log::info!(
+            "[GPU {}] Initialized with {} SMs, batch size: {}",
+            self.device_id,
+            _gpu_device.get_sm_count(),
+            self.batch_size
+        );
 
         // Wait for sync
         self.wait_for_sync(&client).await?;
@@ -283,16 +294,15 @@ impl Miner {
             tail.len()
         );
 
-        // Create worker
+        // Create worker (GPU is already initialized, worker just submits batches)
         let hash_count = Arc::new(AtomicU64::new(0));
         let worker_stop = Arc::new(AtomicBool::new(false));
 
         let worker = GpuWorker::new(
-            self.device_id,
             self.batch_size,
             hash_count.clone(),
             worker_stop.clone(),
-        )?;
+        );
 
         // Start mining in background
         let midstate_copy = midstate;

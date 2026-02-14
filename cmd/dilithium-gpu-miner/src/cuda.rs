@@ -42,42 +42,6 @@ impl GpuDevice {
     pub fn get_sm_count(&self) -> i32 {
         unsafe { gpu_get_sm_count(self.device_id) }
     }
-
-    pub fn mine_batch(
-        &self,
-        midstate: &[u32; 8],
-        tail: &[u8],
-        total_prefix_len: u64,
-        suffix: &[u8],
-        diff_bits: i32,
-        start_nonce: u64,
-        batch_size: u64,
-    ) -> Result<Option<(u64, [u8; 32])>> {
-        let mut result_nonce: u64 = 0;
-        let mut result_hash: [u8; 32] = [0; 32];
-
-        let ret = unsafe {
-            gpu_mine_batch(
-                midstate.as_ptr(),
-                tail.as_ptr(),
-                tail.len() as i32,
-                total_prefix_len,
-                suffix.as_ptr(),
-                suffix.len() as i32,
-                diff_bits,
-                start_nonce,
-                batch_size,
-                &mut result_nonce,
-                result_hash.as_mut_ptr(),
-            )
-        };
-
-        match ret {
-            1 => Ok(Some((result_nonce, result_hash))),
-            0 => Ok(None),
-            _ => anyhow::bail!("GPU mining error"),
-        }
-    }
 }
 
 impl Drop for GpuDevice {
@@ -85,5 +49,41 @@ impl Drop for GpuDevice {
         unsafe {
             gpu_cleanup();
         }
+    }
+}
+
+/// Mine a batch of nonces on the GPU. Requires gpu_init() to have been called.
+pub fn mine_batch(
+    midstate: &[u32; 8],
+    tail: &[u8],
+    total_prefix_len: u64,
+    suffix: &[u8],
+    diff_bits: i32,
+    start_nonce: u64,
+    batch_size: u64,
+) -> Result<Option<(u64, [u8; 32])>> {
+    let mut result_nonce: u64 = 0;
+    let mut result_hash: [u8; 32] = [0; 32];
+
+    let ret = unsafe {
+        gpu_mine_batch(
+            midstate.as_ptr(),
+            tail.as_ptr(),
+            tail.len() as i32,
+            total_prefix_len,
+            suffix.as_ptr(),
+            suffix.len() as i32,
+            diff_bits,
+            start_nonce,
+            batch_size,
+            &mut result_nonce,
+            result_hash.as_mut_ptr(),
+        )
+    };
+
+    match ret {
+        1 => Ok(Some((result_nonce, result_hash))),
+        0 => Ok(None),
+        _ => anyhow::bail!("GPU mining error"),
     }
 }

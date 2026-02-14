@@ -1,13 +1,11 @@
 // GPU worker for mining
 
-use crate::cuda::GpuDevice;
+use crate::cuda;
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub struct GpuWorker {
-    device: GpuDevice,
-    device_id: i32,
     batch_size: u64,
     hash_count: Arc<AtomicU64>,
     stop_flag: Arc<AtomicBool>,
@@ -20,27 +18,15 @@ pub struct MiningResult {
 
 impl GpuWorker {
     pub fn new(
-        device_id: i32,
         batch_size: u64,
         hash_count: Arc<AtomicU64>,
         stop_flag: Arc<AtomicBool>,
-    ) -> Result<Self> {
-        let device = GpuDevice::new(device_id)?;
-
-        log::info!(
-            "[GPU {}] Initialized with {} SMs, batch size: {}",
-            device_id,
-            device.get_sm_count(),
-            batch_size
-        );
-
-        Ok(Self {
-            device,
-            device_id,
+    ) -> Self {
+        Self {
             batch_size,
             hash_count,
             stop_flag,
-        })
+        }
     }
 
     pub fn mine(
@@ -61,8 +47,8 @@ impl GpuWorker {
             let start_nonce = nonce_counter;
             nonce_counter += self.batch_size;
 
-            // Mine batch
-            match self.device.mine_batch(
+            // Mine batch using pre-initialized GPU
+            match cuda::mine_batch(
                 midstate,
                 tail,
                 total_prefix_len,
