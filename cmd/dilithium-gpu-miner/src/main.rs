@@ -1,4 +1,8 @@
+mod backend;
+#[cfg(feature = "cuda")]
 mod cuda;
+#[cfg(feature = "metal")]
+mod metal_backend;
 mod miner;
 mod network;
 mod sha256;
@@ -12,7 +16,7 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 #[command(
     name = "dilithium-gpu-miner",
-    about = "Dilithium GPU Miner - Rust+CUDA Implementation (Recommended)",
+    about = "Dilithium GPU Miner - Rust+GPU Implementation (CUDA/Metal)",
     version = "1.0.0"
 )]
 struct Args {
@@ -37,6 +41,15 @@ struct Args {
     webui_port: u16,
 }
 
+fn backend_name() -> &'static str {
+    #[cfg(feature = "metal")]
+    { return "Metal"; }
+    #[cfg(feature = "cuda")]
+    { return "CUDA"; }
+    #[cfg(not(any(feature = "cuda", feature = "metal")))]
+    { return "None"; }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logger
@@ -52,8 +65,10 @@ async fn main() -> Result<()> {
     println!("  ██║  ██║██║██║     ██║   ██║   ██╔══██║██║██║   ██║██║╚██╔╝██║");
     println!("  ██████╔╝██║███████╗██║   ██║   ██║  ██║██║╚██████╔╝██║ ╚═╝ ██║");
     println!("  ╚═════╝ ╚═╝╚══════╝╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝     ╚═╝");
-    println!("                  GPU Miner v{}", env!("CARGO_PKG_VERSION"));
+    println!("                  GPU Miner v{} [{}]", env!("CARGO_PKG_VERSION"), backend_name());
     println!();
+
+    log::info!("[*] Backend: {}", backend_name());
     log::info!("[*] Wallet address: {}", args.address);
     log::info!("[*] Node URL: {}", args.node);
     log::info!("[*] GPU device: {}", args.device);

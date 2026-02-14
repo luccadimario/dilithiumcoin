@@ -4,6 +4,8 @@ dist/
 /dilithium
 /dilithium-cli
 /dilithium-miner
+/dilithium-gpu-miner
+/dilithium-cpu-gpu-miner
 /myblockchain
 /rebellion
 /rebellion-cli

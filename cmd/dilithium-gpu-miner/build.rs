@@ -4,7 +4,15 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=cuda/");
+    println!("cargo:rerun-if-changed=metal/");
 
+    // Only compile CUDA when the cuda feature is enabled
+    if std::env::var("CARGO_FEATURE_CUDA").is_ok() {
+        build_cuda();
+    }
+}
+
+fn build_cuda() {
     // CUDA toolkit detection
     let cuda_path = if cfg!(target_os = "windows") {
         env::var("CUDA_PATH")
