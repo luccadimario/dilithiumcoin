@@ -46,13 +46,29 @@ func ParseDLT(s string) (int64, error) {
 
 // cmdSend is the simple send command: dilithium-cli send <address> <amount>
 func cmdSend(args []string) {
+	// Separate flags from positional args so flags can appear anywhere
+	// (Go's flag package stops at the first non-flag argument)
+	var flagArgs, positionalArgs []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			flagArgs = append(flagArgs, args[i])
+			// If this flag takes a value, grab the next arg too
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") &&
+				(args[i] == "--node" || args[i] == "-node" || args[i] == "--wallet" || args[i] == "-wallet") {
+				flagArgs = append(flagArgs, args[i+1])
+				i++
+			}
+		} else {
+			positionalArgs = append(positionalArgs, args[i])
+		}
+	}
+
 	fs := flag.NewFlagSet("send", flag.ExitOnError)
 	walletDir := fs.String("wallet", DefaultWalletDir, "Wallet directory")
 	nodeURL := fs.String("node", "http://localhost:8001", "Node API URL")
-	fs.Parse(args)
+	fs.Parse(flagArgs)
 
-	remaining := fs.Args()
-	if len(remaining) < 2 {
+	if len(positionalArgs) < 2 {
 		fmt.Println("Usage: dilithium-cli send <address> <amount>")
 		fmt.Println()
 		fmt.Println("Examples:")
@@ -61,8 +77,8 @@ func cmdSend(args []string) {
 		os.Exit(1)
 	}
 
-	toAddress := remaining[0]
-	amount, err := ParseDLT(remaining[1])
+	toAddress := positionalArgs[0]
+	amount, err := ParseDLT(positionalArgs[1])
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
@@ -115,13 +131,16 @@ func cmdSend(args []string) {
 		"public_key": publicKeyHex,
 	}
 
-	resp, err := postJSON(*nodeURL+"/transaction", tx)
+	// Resolve node URL (try provided, fall back to seed node)
+	activeNode := resolveNodeURL(*nodeURL)
+
+	resp, err := postJSON(activeNode+"/transaction", tx)
 	if err != nil {
-		fmt.Printf("Error: Could not connect to node at %s\n", *nodeURL)
+		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
 		fmt.Printf("       %v\n", err)
 		fmt.Println()
 		fmt.Println("Is the node running? Start it with:")
-		fmt.Println("  ./myblockchain")
+		fmt.Println("  dilithium --api-port 8001")
 		os.Exit(1)
 	}
 
