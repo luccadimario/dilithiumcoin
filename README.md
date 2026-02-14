@@ -36,15 +36,25 @@ Dilithium is one of the first blockchains with **native post-quantum cryptograph
 
 Download the appropriate binary for your platform from the [Releases](../../releases) page.
 
-| Platform | Node | CLI | Miner | GPU Miner |
-|----------|------|-----|-------|-----------|
-| macOS (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` | `dilithium-gpu-miner-darwin-arm64` |
-| macOS (Intel) | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` | `dilithium-gpu-miner-darwin-amd64` |
-| Linux (x64) | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` | `dilithium-gpu-miner-linux-amd64` |
-| Linux (ARM64) | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` | `dilithium-gpu-miner-linux-arm64` |
-| Windows (x64) | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` | `dilithium-gpu-miner-windows-amd64.exe` |
+| Platform | Node | CLI | Miner | CPU/GPU Miner |
+|----------|------|-----|-------|---------------|
+| macOS (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` | `dilithium-cpu-gpu-miner-darwin-arm64` |
+| macOS (Intel) | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` | `dilithium-cpu-gpu-miner-darwin-amd64` |
+| Linux (x64) | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` | `dilithium-cpu-gpu-miner-linux-amd64` |
+| Linux (ARM64) | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` | `dilithium-cpu-gpu-miner-linux-arm64` |
+| Windows (x64) | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` | `dilithium-cpu-gpu-miner-windows-amd64.exe` |
 
-> **GPU Miner**: Pre-built binaries run in CPU mode. For NVIDIA GPU acceleration (~100x speedup), build locally with CUDA — see [GPU Miner docs](cmd/dilithium-gpu-miner/README.md).
+### Miners
+
+| Miner | Language | Description |
+|-------|----------|-------------|
+| `cmd/dilithium-miner` | Go | CPU miner. Simple, works everywhere. |
+| `cmd/dilithium-cpu-gpu-miner` | Go | Optimized CPU miner with optional CUDA GPU support. Pre-built binaries run in CPU mode. |
+| `cmd/dilithium-gpu-miner` | Rust+CUDA | **Recommended for GPU mining.** Highest performance on NVIDIA GPUs. |
+
+> **GPU Miner (Rust+CUDA)**: Recommended for maximum GPU hashrate. Requires Rust toolchain and CUDA Toolkit — see [GPU Miner docs](cmd/dilithium-gpu-miner/README.md).
+>
+> **CPU/GPU Miner (Go)**: Pre-built binaries run in CPU mode. For NVIDIA GPU acceleration, build locally with CUDA — see [CPU/GPU Miner docs](cmd/dilithium-cpu-gpu-miner/README.md).
 
 ### Build from Source
 
@@ -84,17 +94,21 @@ Requires Go 1.25 or later.
 
 ### GPU Mining (NVIDIA)
 
+**Option A: Rust+CUDA miner (recommended)**
 ```bash
-# Pre-built binary (runs in CPU mode)
-./dilithium-gpu-miner --address YOUR_WALLET_ADDRESS
-
-# Build with CUDA for ~100x speedup (requires NVIDIA GPU + CUDA Toolkit)
 cd cmd/dilithium-gpu-miner
-make gpu SM=86    # Set SM for your GPU architecture
-./dilithium-gpu-miner --gpu --address YOUR_WALLET_ADDRESS
+cargo build --release
+./target/release/dilithium-gpu-miner --address YOUR_WALLET_ADDRESS
 ```
 
-See [GPU Miner README](cmd/dilithium-gpu-miner/README.md) for full docs, SM architecture table, and troubleshooting.
+**Option B: Go hybrid miner with CUDA**
+```bash
+cd cmd/dilithium-cpu-gpu-miner
+make gpu SM=86    # Set SM for your GPU architecture
+./dilithium-cpu-gpu-miner --gpu --address YOUR_WALLET_ADDRESS
+```
+
+See [GPU Miner README](cmd/dilithium-gpu-miner/README.md) or [CPU/GPU Miner README](cmd/dilithium-cpu-gpu-miner/README.md) for full docs.
 
 ### Send a Transaction
 
@@ -147,10 +161,10 @@ Flags:
 
 The miner automatically starts an embedded `dilithium` node if no `--node` URL is provided. Both binaries must be in the same directory (or the node binary must be in your PATH).
 
-## GPU Miner Flags
+## CPU/GPU Miner Flags
 
 ```
-dilithium-gpu-miner [flags]
+dilithium-cpu-gpu-miner [flags]
 
 Flags:
   --address string    Mining reward address (auto-detected from wallet if not set)
@@ -167,7 +181,9 @@ Flags:
   --version           Show version
 ```
 
-The GPU miner is self-contained — copy the `cmd/dilithium-gpu-miner/` directory to any machine and build with `make gpu SM=86` for CUDA support. Pre-built binaries from releases run in CPU mode.
+The CPU/GPU miner is self-contained — copy `cmd/dilithium-cpu-gpu-miner/` to any machine and build with `make gpu SM=86` for CUDA support. Pre-built binaries from releases run in CPU mode.
+
+For best GPU performance, use the Rust+CUDA miner instead: `cmd/dilithium-gpu-miner/`.
 
 ## API Endpoints
 
@@ -262,7 +278,8 @@ dilithiumcoin/
 ├── cmd/
 │   ├── dilithium-cli/        # CLI tool
 │   ├── dilithium-miner/      # Standalone CPU miner
-│   └── dilithium-gpu-miner/  # GPU miner (CUDA + CPU fallback)
+│   ├── dilithium-cpu-gpu-miner/  # Go hybrid miner (optimized CPU + optional CUDA GPU)
+│   └── dilithium-gpu-miner/     # Rust+CUDA GPU miner (recommended)
 └── dist/             # Built binaries (see Releases)
 ```
 

@@ -132,14 +132,14 @@ echo "Miner build complete!"
 echo ""
 
 # ============================================================================
-# BUILD GPU MINER (CPU-only cross-compile — GPU users build locally with make gpu)
+# BUILD CPU/GPU MINER (CPU-only cross-compile — GPU users build locally with make gpu)
 # ============================================================================
-echo "Building GPU Miner..."
+echo "Building CPU/GPU Miner..."
 for platform in "${platforms[@]}"
 do
     IFS='/' read -r GOOS GOARCH <<< "$platform"
 
-    output_name="dilithium-gpu-miner-${GOOS}-${GOARCH}"
+    output_name="dilithium-cpu-gpu-miner-${GOOS}-${GOARCH}"
 
     if [ "$GOOS" = "windows" ]; then
         output_name="${output_name}.exe"
@@ -147,18 +147,18 @@ do
 
     echo "  Building for $GOOS/$GOARCH..."
 
-    (cd cmd/dilithium-gpu-miner && env CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
+    (cd cmd/dilithium-cpu-gpu-miner && env CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
         -ldflags "-X main.AppVersion=${VERSION}" \
         -o ../../dist/$output_name \
         .)
 
     if [ $? -ne 0 ]; then
-        echo "Error building GPU Miner for $platform"
+        echo "Error building CPU/GPU Miner for $platform"
         exit 1
     fi
 done
 
-echo "GPU Miner build complete!"
+echo "CPU/GPU Miner build complete!"
 echo ""
 
 # ============================================================================
@@ -167,26 +167,26 @@ echo ""
 if [ "$BUILD_GPU_MINER" = true ]; then
     echo "Building Rust+CUDA GPU Miner..."
 
-    if [ -d "gpu-miner" ]; then
+    if [ -d "cmd/dilithium-gpu-miner" ]; then
         # Check for Rust
         if command -v cargo &> /dev/null; then
             # Check for CUDA
             if command -v nvcc &> /dev/null; then
                 echo "  Found Rust and CUDA, building..."
 
-                (cd gpu-miner && cargo build --release 2>&1 | grep -E "(Compiling|Finished|error)" || true)
+                (cd cmd/dilithium-gpu-miner && cargo build --release 2>&1 | grep -E "(Compiling|Finished|error)" || true)
 
-                if [ $? -eq 0 ] && [ -f "gpu-miner/target/release/dilithium-gpu-miner" ]; then
+                if [ $? -eq 0 ] && [ -f "cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner" ]; then
                     # Copy binary to dist
                     mkdir -p dist
 
                     # Determine platform-specific name
                     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-                        cp gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-linux-amd64
+                        cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-linux-amd64
                     elif [[ "$OSTYPE" == "darwin"* ]]; then
-                        cp gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-darwin-amd64
+                        cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner dist/dilithium-gpu-miner-cuda-darwin-amd64
                     elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
-                        cp gpu-miner/target/release/dilithium-gpu-miner.exe dist/dilithium-gpu-miner-cuda-windows-amd64.exe
+                        cp cmd/dilithium-gpu-miner/target/release/dilithium-gpu-miner.exe dist/dilithium-gpu-miner-cuda-windows-amd64.exe
                     fi
 
                     echo "  ✓ Rust+CUDA GPU Miner build complete!"
@@ -203,7 +203,7 @@ if [ "$BUILD_GPU_MINER" = true ]; then
             exit 1
         fi
     else
-        echo "  ✗ gpu-miner directory not found"
+        echo "  ✗ cmd/dilithium-gpu-miner directory not found"
         exit 1
     fi
 

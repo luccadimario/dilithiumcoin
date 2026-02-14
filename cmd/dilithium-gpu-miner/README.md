@@ -1,115 +1,169 @@
-# Dilithium GPU Miner
+# Dilithium GPU Miner (Rust+CUDA) — Recommended
 
-GPU-accelerated SHA-256 proof-of-work miner for the Dilithium blockchain. Uses CUDA for NVIDIA GPUs with a CPU fallback that works everywhere.
+A high-performance CUDA-accelerated miner for the Dilithium cryptocurrency network, built with Rust and CUDA. This is the **recommended** GPU miner for maximum performance.
 
-## Quick Start
+## Features
 
-### Option 1: Download pre-built binary (CPU mode)
+- **High Performance**: 2000+ MH/s on NVIDIA RTX 3060 Ti
+- **CUDA Optimization**: Custom optimized SHA-256 kernel with midstate precomputation
+- **Real-time Monitoring**: Built-in web dashboard for stats and monitoring
+- **Dynamic Difficulty**: Automatic adaptation to network difficulty changes
+- **Safe & Reliable**: Memory-safe Rust implementation with proper error handling
 
-Download `dilithium-gpu-miner` from the [releases page](https://github.com/luccadimario/dilithiumcoin/releases), then:
+## Requirements
+
+### Hardware
+- NVIDIA GPU with CUDA support (Compute Capability 3.5+)
+- Recommended: RTX 3060 Ti or better
+
+### Software
+- CUDA Toolkit 11.0 or later
+- Rust toolchain (1.70+)
+- C++ compiler (MSVC on Windows, GCC on Linux)
+
+## Installation
+
+### Windows
+
+1. Install [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads)
+2. Install [Rust](https://rustup.rs/)
+3. Install Visual Studio Build Tools with C++ support
 
 ```bash
-chmod +x dilithium-gpu-miner
-./dilithium-gpu-miner --address YOUR_DLT_ADDRESS
+git clone https://github.com/luccadimario/dilithiumcoin.git
+cd dilithiumcoin/cmd/dilithium-gpu-miner
+cargo build --release
 ```
 
-The miner starts an embedded node automatically. Use `--peer` to connect to the network:
+### Linux
 
+1. Install CUDA Toolkit:
 ```bash
-./dilithium-gpu-miner --address YOUR_ADDRESS --peer seed.dilithium.network:5000
+# Ubuntu/Debian
+sudo apt-get install nvidia-cuda-toolkit
+
+# Or download from NVIDIA website for latest version
 ```
 
-### Option 2: Build with CUDA (GPU mode)
-
-Requires NVIDIA GPU + [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit).
-
+2. Install Rust:
 ```bash
-cd cmd/dilithium-gpu-miner
-make gpu SM=86          # Set SM for your GPU (see table below)
-./dilithium-gpu-miner --gpu --address YOUR_ADDRESS
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-## CUDA SM Architecture Table
-
-| SM Value | GPU Generation | Example GPUs |
-|----------|---------------|--------------|
-| `75` | Turing | RTX 2060, 2070, 2080 |
-| `80` | Ampere | A100, RTX 3090 (desktop) |
-| `86` | Ampere | RTX 3060, 3070, 3080 (laptop) |
-| `89` | Ada Lovelace | RTX 4060, 4070, 4080, 4090 |
-| `90` | Hopper | H100, H200 |
-
-Find your GPU's SM version: `nvidia-smi --query-gpu=compute_cap --format=csv`
-
-## Command-Line Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--address` | auto-detect | Mining reward address |
-| `--wallet` | `~/.dilithium/wallet` | Wallet directory for auto-detection |
-| `--node` | (embedded) | Node API URL (e.g., `http://localhost:8080`) |
-| `--no-node` | false | Disable embedded node (requires `--node`) |
-| `--peer` | | Seed peer for embedded node |
-| `--threads` | all CPUs | CPU mining thread count |
-| `--gpu` | false | Enable GPU mining |
-| `--device` | 0 | GPU device ID |
-| `--batch-size` | 67108864 | Nonces per GPU kernel launch |
-| `--pool` | | Pool address for pool mining (host:port) |
-| `--benchmark` | false | Run hashrate benchmark and exit |
-| `--version` | false | Show version |
-
-## Performance
-
-Typical hashrates (SHA-256 with midstate optimization):
-
-| Hardware | Mode | Hashrate |
-|----------|------|----------|
-| Apple M4 (1 thread) | CPU | ~20 MH/s |
-| Apple M4 (10 threads) | CPU | ~180 MH/s |
-| Intel i7 (8 threads) | CPU | ~80 MH/s |
-| RTX 3080 | GPU | ~2,000 MH/s |
-| RTX 4090 | GPU | ~5,000 MH/s |
-
-Run `./dilithium-gpu-miner --benchmark` to measure your hardware.
-
-## Pool Mining
-
+3. Build:
 ```bash
-# CPU pool mining
-./dilithium-gpu-miner --pool pool.example.com:3333 --address YOUR_ADDRESS
-
-# GPU pool mining
-./dilithium-gpu-miner --pool pool.example.com:3333 --address YOUR_ADDRESS --gpu
+git clone https://github.com/luccadimario/dilithiumcoin.git
+cd dilithiumcoin/cmd/dilithium-gpu-miner
+cargo build --release
 ```
 
-## Building from Source
-
-### CPU-only (from repo root)
+## Usage
 
 ```bash
-go build ./cmd/dilithium-gpu-miner
+dilithium-gpu-miner --address YOUR_WALLET_ADDRESS --node http://localhost:8080
 ```
 
-### With CUDA support
+### Command-Line Options
 
+- `--address, -a`: Your wallet address (required)
+- `--node, -n`: Node URL (default: http://localhost:8080)
+- `--device, -d`: GPU device ID (default: 0)
+- `--batch-size, -b`: Nonces per kernel launch (default: 67108864)
+- `--webui-port, -w`: Web dashboard port (default: 8080)
+
+### Examples
+
+**Mine to local node:**
 ```bash
-cd cmd/dilithium-gpu-miner
-make gpu SM=86    # adjust SM for your GPU
+dilithium-gpu-miner -a YOUR_WALLET_ADDRESS
 ```
 
-Or using the build script:
-
+**Mine to remote node:**
 ```bash
-cd cmd/dilithium-gpu-miner
-./build.sh --gpu --sm 86
+dilithium-gpu-miner -a YOUR_WALLET_ADDRESS -n http://node.example.com:8080
+```
+
+**Use specific GPU and custom batch size:**
+```bash
+dilithium-gpu-miner -a YOUR_WALLET_ADDRESS -d 1 -b 134217728
+```
+
+## Web Dashboard
+
+Access the web dashboard at `http://127.0.0.1:8080` (or your custom port) to view:
+- Real-time hashrate
+- Blocks mined
+- Total earnings
+- GPU statistics
+- Session uptime
+
+## Performance Tuning
+
+### Batch Size
+
+The `--batch-size` parameter controls how many nonces are processed per GPU kernel launch:
+- **Higher values** (134217728): Better for high difficulty, but slower to detect stale work
+- **Lower values** (33554432): Better for low difficulty, faster stale detection
+- **Default** (67108864): Good balance for most scenarios
+
+### Multiple GPUs
+
+To mine with multiple GPUs, run multiple instances with different `--device` values:
+```bash
+dilithium-gpu-miner -a YOUR_WALLET -d 0 -w 8080
+dilithium-gpu-miner -a YOUR_WALLET -d 1 -w 8081
 ```
 
 ## Troubleshooting
 
-**"GPU mining not available"** -- Binary was built without CUDA. Rebuild with `make gpu`.
+### "CUDA error" on startup
+- Verify CUDA is installed: `nvcc --version`
+- Check GPU is detected: `nvidia-smi`
+- Ensure your GPU supports CUDA Compute Capability 3.5+
 
-**"failed to initialize CUDA device"** -- Check that NVIDIA drivers are installed (`nvidia-smi`) and the CUDA toolkit matches your driver version.
+### Low hashrate
+- Check GPU isn't throttling due to temperature
+- Try adjusting batch size
+- Ensure no other GPU-intensive applications are running
 
-**"CUDA error: no kernel image is available"** -- SM architecture mismatch. Rebuild with the correct `SM=` value for your GPU.
+### "Failed to connect to node"
+- Verify node URL is correct
+- Check node is running and accessible
+- Ensure firewall isn't blocking the connection
 
-**Low GPU hashrate** -- Try increasing `--batch-size` (e.g., `--batch-size 134217728`). Larger batches improve GPU utilization.
+## Architecture
+
+- **Rust**: High-level mining logic, networking, and coordination
+- **CUDA**: GPU-accelerated SHA-256 hashing kernel
+- **Tokio**: Async runtime for efficient I/O
+- **Axum**: Web server for monitoring dashboard
+
+## Development
+
+### Build in debug mode:
+```bash
+cargo build
+```
+
+### Run with logging:
+```bash
+RUST_LOG=debug cargo run -- -a YOUR_WALLET
+```
+
+### Run tests:
+```bash
+cargo test
+```
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Contributing
+
+Contributions are welcome! Please submit pull requests or open issues on GitHub.
+
+## Acknowledgments
+
+- Built for the [Dilithium](https://github.com/luccadimario/dilithiumcoin) cryptocurrency
+- Optimized CUDA kernels inspired by Bitcoin mining best practices

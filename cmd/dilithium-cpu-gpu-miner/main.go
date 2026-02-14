@@ -48,7 +48,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("dilithium-gpu-miner v%s\n", AppVersion)
+		fmt.Printf("dilithium-cpu-gpu-miner v%s\n", AppVersion)
 		os.Exit(0)
 	}
 
@@ -67,7 +67,7 @@ func main() {
 		fmt.Println("    This binary was not compiled with CUDA support.")
 		fmt.Println("    To enable GPU mining:")
 		fmt.Println("      1. Install NVIDIA CUDA Toolkit")
-		fmt.Println("      2. Run: cd cmd/dilithium-gpu-miner && make gpu")
+		fmt.Println("      2. Run: cd cmd/dilithium-cpu-gpu-miner && make gpu")
 		fmt.Println("      3. Or build with: go build -tags cuda")
 		fmt.Println()
 		os.Exit(1)
@@ -80,8 +80,8 @@ func main() {
 			fmt.Println("[!] Error: Pool worker needs a payout address.")
 			fmt.Println()
 			fmt.Println("    Provide an address with --address or --wallet:")
-			fmt.Println("      dilithium-gpu-miner --pool <host:port> --address <DLT_ADDRESS>")
-			fmt.Println("      dilithium-gpu-miner --pool <host:port> --wallet ~/.dilithium/wallet")
+			fmt.Println("      dilithium-cpu-gpu-miner --pool <host:port> --address <DLT_ADDRESS>")
+			fmt.Println("      dilithium-cpu-gpu-miner --pool <host:port> --wallet ~/.dilithium/wallet")
 			os.Exit(1)
 		}
 		fmt.Printf("[*] Pool mining mode: %s\n", *poolAddr)
@@ -126,8 +126,8 @@ func main() {
 		fmt.Println("[!] Error: No miner address found.")
 		fmt.Println()
 		fmt.Println("    Provide an address with --address or --wallet:")
-		fmt.Println("      dilithium-gpu-miner --address <DLT_ADDRESS>")
-		fmt.Println("      dilithium-gpu-miner --wallet ~/.dilithium/wallet")
+		fmt.Println("      dilithium-cpu-gpu-miner --address <DLT_ADDRESS>")
+		fmt.Println("      dilithium-cpu-gpu-miner --wallet ~/.dilithium/wallet")
 		fmt.Println()
 		fmt.Println("    Or create a wallet first with the dilithium CLI.")
 		os.Exit(1)
@@ -144,7 +144,7 @@ func main() {
 			fmt.Printf("[!] Error starting embedded node: %v\n", err)
 			fmt.Println()
 			fmt.Println("    You can run a node separately and connect with --node:")
-			fmt.Println("      dilithium-gpu-miner --node http://localhost:8080")
+			fmt.Println("      dilithium-cpu-gpu-miner --node http://localhost:8080")
 			fmt.Println()
 			fmt.Println("    Or ensure the 'dilithium' binary is in the same directory or PATH.")
 			os.Exit(1)

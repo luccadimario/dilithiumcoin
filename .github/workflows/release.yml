@@ -61,15 +61,15 @@ jobs:
             done
           done
 
-          # GPU miner has its own go.mod (self-contained for users to copy & build with CUDA)
+          # CPU/GPU miner (Go) has its own go.mod (self-contained for users to copy & build with CUDA)
           for platform in "${platforms[@]}"; do
             IFS='/' read -r GOOS GOARCH <<< "$platform"
-            output="dist/dilithium-gpu-miner-${GOOS}-${GOARCH}"
+            output="dist/dilithium-cpu-gpu-miner-${GOOS}-${GOARCH}"
             if [ "$GOOS" = "windows" ]; then
               output="${output}.exe"
             fi
-            echo "Building dilithium-gpu-miner for ${GOOS}/${GOARCH}..."
-            cd cmd/dilithium-gpu-miner
+            echo "Building dilithium-cpu-gpu-miner for ${GOOS}/${GOARCH}..."
+            cd cmd/dilithium-cpu-gpu-miner
             env CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
               -ldflags "$LDFLAGS" \
               -o "../../$output" \
@@ -258,17 +258,19 @@ jobs:
 
             > **Wallet** works standalone — no node required. It connects to the public Dilithium network automatically.
 
-            ### CLI Binaries (Node / CLI / Miner / GPU Miner)
+            ### CLI Binaries (Node / CLI / Miner / CPU-GPU Miner)
 
-            | Platform | Node | CLI | Miner | GPU Miner |
-            |----------|------|-----|-------|-----------|
-            | Linux x86_64 | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` | `dilithium-gpu-miner-linux-amd64` |
-            | Linux ARM64 | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` | `dilithium-gpu-miner-linux-arm64` |
-            | macOS x86_64 | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` | `dilithium-gpu-miner-darwin-amd64` |
-            | macOS ARM64 (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` | `dilithium-gpu-miner-darwin-arm64` |
-            | Windows x86_64 | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` | `dilithium-gpu-miner-windows-amd64.exe` |
+            | Platform | Node | CLI | Miner | CPU/GPU Miner |
+            |----------|------|-----|-------|---------------|
+            | Linux x86_64 | `dilithium-linux-amd64` | `dilithium-cli-linux-amd64` | `dilithium-miner-linux-amd64` | `dilithium-cpu-gpu-miner-linux-amd64` |
+            | Linux ARM64 | `dilithium-linux-arm64` | `dilithium-cli-linux-arm64` | `dilithium-miner-linux-arm64` | `dilithium-cpu-gpu-miner-linux-arm64` |
+            | macOS x86_64 | `dilithium-darwin-amd64` | `dilithium-cli-darwin-amd64` | `dilithium-miner-darwin-amd64` | `dilithium-cpu-gpu-miner-darwin-amd64` |
+            | macOS ARM64 (Apple Silicon) | `dilithium-darwin-arm64` | `dilithium-cli-darwin-arm64` | `dilithium-miner-darwin-arm64` | `dilithium-cpu-gpu-miner-darwin-arm64` |
+            | Windows x86_64 | `dilithium-windows-amd64.exe` | `dilithium-cli-windows-amd64.exe` | `dilithium-miner-windows-amd64.exe` | `dilithium-cpu-gpu-miner-windows-amd64.exe` |
 
-            > **GPU Miner**: Pre-built binaries run in CPU mode. For NVIDIA GPU acceleration (~100x speedup), build locally with CUDA: `cd cmd/dilithium-gpu-miner && make gpu SM=86`
+            > **GPU Miner (Rust+CUDA)**: For maximum GPU performance, build the Rust miner from `cmd/dilithium-gpu-miner/`.
+            >
+            > **CPU/GPU Miner (Go)**: Pre-built binaries run in CPU mode. For NVIDIA GPU acceleration (~100x speedup), build locally with CUDA: `cd cmd/dilithium-cpu-gpu-miner && make gpu SM=86`
 
             ### Quick Start
 

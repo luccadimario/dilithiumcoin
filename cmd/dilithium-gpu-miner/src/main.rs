@@ -12,7 +12,7 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 #[command(
     name = "dilithium-gpu-miner",
-    about = "Dilithium GPU Miner - Rust+CUDA Implementation",
+    about = "Dilithium GPU Miner - Rust+CUDA Implementation (Recommended)",
     version = "1.0.0"
 )]
 struct Args {
