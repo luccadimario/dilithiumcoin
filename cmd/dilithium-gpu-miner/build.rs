@@ -36,6 +36,7 @@ fn main() {
         .cuda(true)
         .flag("-allow-unsupported-compiler")
         .flag("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
+        .flag("-D__STRICT_ANSI__")
         .flag(&format!("-arch={}", sm_arch))
         .flag("-O3")
         .flag("--use_fast_math")
