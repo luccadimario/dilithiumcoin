@@ -45,10 +45,15 @@ async fn main() -> Result<()> {
     // Parse arguments
     let args = Args::parse();
 
-    log::info!("=======================================================");
-    log::info!("   DILITHIUM GPU MINER - Rust+CUDA Implementation");
-    log::info!("=======================================================");
-    log::info!("");
+    println!();
+    println!("  ██████╗ ██╗██╗     ██╗████████╗██╗  ██╗██╗██╗   ██╗███╗   ███╗");
+    println!("  ██╔══██╗██║██║     ██║╚══██╔══╝██║  ██║██║██║   ██║████╗ ████║");
+    println!("  ██║  ██║██║██║     ██║   ██║   ███████║██║██║   ██║██╔████╔██║");
+    println!("  ██║  ██║██║██║     ██║   ██║   ██╔══██║██║██║   ██║██║╚██╔╝██║");
+    println!("  ██████╔╝██║███████╗██║   ██║   ██║  ██║██║╚██████╔╝██║ ╚═╝ ██║");
+    println!("  ╚═════╝ ╚═╝╚══════╝╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝     ╚═╝");
+    println!("                  GPU Miner v{}", env!("CARGO_PKG_VERSION"));
+    println!();
     log::info!("[*] Wallet address: {}", args.address);
     log::info!("[*] Node URL: {}", args.node);
     log::info!("[*] GPU device: {}", args.device);
