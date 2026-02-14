@@ -3,6 +3,10 @@ name = "dilithium-gpu-miner"
 version = "1.0.0"
 edition = "2021"
 
+[features]
+cuda = []
+metal = ["dep:metal", "dep:objc"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -40,6 +44,10 @@ ctrlc = "3.4"
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+
+# Metal GPU backend (macOS only)
+metal = { version = "0.29", optional = true }
+objc = { version = "0.2", optional = true }
 
 [build-dependencies]
 # CUDA compilation
