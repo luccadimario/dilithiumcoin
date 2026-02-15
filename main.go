@@ -68,15 +68,17 @@ func main() {
 
 	// Create peer manager
 	peerConfig := &PeerConfig{
-		MaxInbound:       config.Network.MaxInbound,
-		MaxOutbound:      config.Network.MaxOutbound,
-		HandshakeTimeout: config.Network.HandshakeTimeout,
-		PingInterval:     config.Network.PingInterval,
-		PingTimeout:      config.Network.PingTimeout,
-		ConnectTimeout:   config.Network.ConnectTimeout,
-		BanDuration:      config.Network.BanDuration,
-		MinPeers:         config.Network.MinOutbound,
-		MaxAddrBook:      config.Network.MaxStoredPeers,
+		MaxInbound:         config.Network.MaxInbound,
+		MaxOutbound:        config.Network.MaxOutbound,
+		HandshakeTimeout:   config.Network.HandshakeTimeout,
+		PingInterval:       config.Network.PingInterval,
+		PingTimeout:        config.Network.PingTimeout,
+		ConnectTimeout:     config.Network.ConnectTimeout,
+		BanDuration:        config.Network.BanDuration,
+		BanThreshold:       100,
+		RateLimitThreshold: 1000,
+		MinPeers:           config.Network.MinOutbound,
+		MaxAddrBook:        config.Network.MaxStoredPeers,
 	}
 	peerManager := NewPeerManager(node, peerConfig)
 	peerManager.netConfig = config.Network

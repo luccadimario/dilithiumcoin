@@ -443,6 +443,13 @@ func NewPeerManager(node *Node, config *PeerConfig) *PeerManager {
 	if config == nil {
 		config = DefaultPeerConfig()
 	}
+	// Guard against zero values that would cause instant bans
+	if config.BanThreshold <= 0 {
+		config.BanThreshold = 100
+	}
+	if config.RateLimitThreshold <= 0 {
+		config.RateLimitThreshold = 1000
+	}
 
 	return &PeerManager{
 		config:   config,
