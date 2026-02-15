@@ -6,6 +6,7 @@ import (
 	"fmt"
 	crand "crypto/rand"
 	"encoding/binary"
+	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -56,31 +57,43 @@ func (s PeerState) String() string {
 
 // PeerConfig holds peer manager configuration
 type PeerConfig struct {
-	MaxInbound      int           // Maximum inbound connections
-	MaxOutbound     int           // Maximum outbound connections
-	HandshakeTimeout time.Duration // Timeout for handshake completion
-	PingInterval    time.Duration // Interval between pings
-	PingTimeout     time.Duration // Timeout waiting for pong
-	ConnectTimeout  time.Duration // Timeout for TCP connection
-	BanDuration     time.Duration // How long to ban misbehaving peers
-	MinPeers        int           // Minimum peers to maintain
-	MaxAddrBook     int           // Maximum addresses to store
+	MaxInbound         int           // Maximum inbound connections
+	MaxOutbound        int           // Maximum outbound connections
+	HandshakeTimeout   time.Duration // Timeout for handshake completion
+	PingInterval       time.Duration // Interval between pings
+	PingTimeout        time.Duration // Timeout waiting for pong
+	ConnectTimeout     time.Duration // Timeout for TCP connection
+	BanDuration        time.Duration // How long to ban misbehaving peers
+	BanThreshold       int           // Misbehavior score threshold for ban (Bitcoin-style)
+	RateLimitThreshold int           // Messages per 10s before spam penalty
+	MinPeers           int           // Minimum peers to maintain
+	MaxAddrBook        int           // Maximum addresses to store
 }
 
 // DefaultPeerConfig returns the default peer configuration
 func DefaultPeerConfig() *PeerConfig {
 	return &PeerConfig{
-		MaxInbound:       32,
-		MaxOutbound:      8,
-		HandshakeTimeout: 30 * time.Second,
-		PingInterval:     2 * time.Minute,
-		PingTimeout:      30 * time.Second,
-		ConnectTimeout:   10 * time.Second,
-		BanDuration:      24 * time.Hour,
-		MinPeers:         3,
-		MaxAddrBook:      1000,
+		MaxInbound:         32,
+		MaxOutbound:        8,
+		HandshakeTimeout:   30 * time.Second,
+		PingInterval:       2 * time.Minute,
+		PingTimeout:        30 * time.Second,
+		ConnectTimeout:     10 * time.Second,
+		BanDuration:        1 * time.Hour,
+		BanThreshold:       100,
+		RateLimitThreshold: 1000,
+		MinPeers:           3,
+		MaxAddrBook:        1000,
 	}
 }
+
+// Misbehavior penalty points (Bitcoin-style scoring)
+const (
+	PenaltyInvalidBlock  = 100 // Invalid PoW, hash, difficulty, transactions — instant ban
+	PenaltyInvalidTx     = 10  // Invalid transaction relay — 10 strikes = ban
+	PenaltyMessageDecode = 1   // Malformed message — 100 strikes = ban
+	PenaltySpam          = 100 // Extreme message spam (>1000/10s) — instant ban
+)
 
 // ============================================================================
 // PEER
@@ -118,9 +131,10 @@ type Peer struct {
 	MsgsSent      uint64
 	MsgsRecv      uint64
 
-	// Rate limiting (shannon #9)
-	msgWindowStart time.Time
-	msgWindowCount int
+	// Misbehavior scoring (Bitcoin-style) and spam detection
+	misbehaviorScore int
+	msgWindowStart   time.Time
+	msgWindowCount   int
 
 	// Sync state — prevents duplicate sync requests to same peer
 	syncInProgress bool
@@ -130,6 +144,24 @@ type Peer struct {
 	sendCh        chan *P2PMessage
 	stopCh        chan struct{}
 	manager       *PeerManager
+}
+
+// AddMisbehavior increases a peer's misbehavior score and bans if threshold exceeded.
+// This implements Bitcoin-style graduated penalties instead of blanket rate limiting.
+func (p *Peer) AddMisbehavior(points int, reason string) {
+	p.mutex.Lock()
+	p.misbehaviorScore += points
+	score := p.misbehaviorScore
+	threshold := p.manager.config.BanThreshold
+	p.mutex.Unlock()
+
+	fmt.Printf("Peer %s misbehavior +%d (%s), score: %d/%d\n",
+		p.Addr, points, reason, score, threshold)
+
+	if score >= threshold {
+		host, _, _ := net.SplitHostPort(p.Addr)
+		p.manager.Ban(host, fmt.Sprintf("misbehavior score %d: %s", score, reason))
+	}
 }
 
 // cryptoRandUint64 generates a cryptographically secure random uint64 (shannon #14)
@@ -227,6 +259,7 @@ func (p *Peer) readLoop() {
 		msg, err := DecodeMessage(data)
 		if err != nil {
 			fmt.Printf("Error decoding message from %s: %v\n", p.Addr, err)
+			p.AddMisbehavior(PenaltyMessageDecode, "message decode error")
 			continue
 		}
 
@@ -236,27 +269,19 @@ func (p *Peer) readLoop() {
 		p.BytesRecv += uint64(len(data))
 		p.MsgsRecv++
 
-		// P2P message rate limiting (shannon #9)
-		// Allow 500 messages per 10 seconds per peer (syncs are bursty)
+		// Spam detection — only penalize extreme abuse, not legitimate sync
 		if now.Sub(p.msgWindowStart) > 10*time.Second {
 			p.msgWindowStart = now
 			p.msgWindowCount = 1
 		} else {
 			p.msgWindowCount++
 		}
-		rateLimited := p.msgWindowCount > 500
+		isSpamming := p.msgWindowCount > p.manager.config.RateLimitThreshold
 		p.mutex.Unlock()
 
-		if rateLimited {
-			fmt.Printf("Warning: peer %s exceeding message rate (%d msgs in window)\n", p.Addr, p.msgWindowCount)
-			// Only ban at 2x the limit (1000+ msgs) - likely abuse
-			if p.msgWindowCount > 1000 {
-				host, _, _ := net.SplitHostPort(p.Addr)
-				p.manager.Ban(host, "P2P message rate limit exceeded")
-				fmt.Printf("Banned peer %s: message rate limit exceeded\n", p.Addr)
-				return
-			}
-			continue // drop the message but don't ban
+		if isSpamming {
+			p.AddMisbehavior(PenaltySpam, fmt.Sprintf("extreme message spam (%d msgs/10s)", p.msgWindowCount))
+			return
 		}
 
 		p.manager.handleMessage(p, msg)
@@ -938,6 +963,7 @@ func (pm *PeerManager) handleTx(peer *Peer, msg *TxMsg) {
 		// Send reject message
 		reject := NewRejectMsg(MsgTypeTx, RejectInvalid, err.Error(), msg.Transaction.Signature)
 		peer.SendMessage(MsgTypeReject, reject)
+		peer.AddMisbehavior(PenaltyInvalidTx, "invalid transaction: "+err.Error())
 		return
 	}
 
@@ -954,7 +980,13 @@ func (pm *PeerManager) handleBlock(peer *Peer, msg *BlockMsg) {
 		return
 	}
 
-	pm.node.AddBlock(msg.Block, peer.Addr)
+	err := pm.node.AddBlock(msg.Block, peer.Addr)
+	if err != nil {
+		if blockErr, ok := err.(*BlockError); ok && blockErr.Penalty > 0 {
+			peer.AddMisbehavior(blockErr.Penalty, blockErr.Reason)
+		}
+		return
+	}
 
 	// Announce to other peers if accepted
 	pm.BroadcastInv([]*InvVector{NewInvVector(InvTypeBlock, msg.Block.Hash)}, peer.Addr)
@@ -1104,6 +1136,7 @@ func (pm *PeerManager) handleGetBlocks(peer *Peer, msg *GetBlocksMsg) {
 // handleBlocks processes received blocks and requests more if needed.
 // Validates and inserts blocks directly instead of delegating to handleBlockMessage,
 // which avoids triggering requestChainSync per failed block (sync amplification).
+// Supports chain reorganization when peers have a heavier fork.
 func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 	if len(msg.Blocks) == 0 {
 		// Empty response — sync done, clear flag
@@ -1125,6 +1158,8 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 	}
 
 	added := 0
+	needsReorg := false
+
 	for _, block := range msg.Blocks {
 		if block == nil {
 			continue
@@ -1139,8 +1174,9 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 
 		// Block must connect to our chain tip
 		if block.PreviousHash != lastBlock.Hash {
-			fmt.Printf("Batch block #%d doesn't connect (expected prev %s, got %s) - stopping batch\n",
+			fmt.Printf("Batch block #%d doesn't connect (expected prev %s, got %s) - fork detected\n",
 				block.Index, lastBlock.Hash[:16], block.PreviousHash[:16])
+			needsReorg = true
 			break
 		}
 
@@ -1148,17 +1184,20 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 		expectedBits := bc.GetCurrentDifficultyBitsLocked()
 		if !meetsDifficultyBits(block.Hash, expectedBits) {
 			fmt.Printf("Batch block #%d does not meet difficulty target (%d bits) - stopping batch\n", block.Index, expectedBits)
+			peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d bad PoW", block.Index))
 			break
 		}
 		if block.DifficultyBits > 0 {
 			if block.DifficultyBits != expectedBits {
 				fmt.Printf("Batch block #%d has wrong difficulty bits %d (expected %d) - stopping batch\n", block.Index, block.DifficultyBits, expectedBits)
+				peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d wrong difficulty bits", block.Index))
 				break
 			}
 		} else {
 			expectedHex := difficultyBitsToHexDigits(expectedBits)
 			if block.Difficulty != expectedHex {
 				fmt.Printf("Batch block #%d has wrong difficulty %d (expected %d) - stopping batch\n", block.Index, block.Difficulty, expectedHex)
+				peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d wrong difficulty", block.Index))
 				break
 			}
 		}
@@ -1167,22 +1206,26 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 		now := time.Now().Unix()
 		if block.Timestamp > now+2*60*60 {
 			fmt.Printf("Batch block #%d timestamp too far in future - stopping batch\n", block.Index)
+			peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d future timestamp", block.Index))
 			break
 		}
 		if block.Timestamp < lastBlock.Timestamp {
 			fmt.Printf("Batch block #%d timestamp before previous block - stopping batch\n", block.Index)
+			peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d timestamp before prev", block.Index))
 			break
 		}
 
 		// Verify hash
 		if block.Hash != block.CalculateHash() {
 			fmt.Printf("Batch block #%d has invalid hash - stopping batch\n", block.Index)
+			peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d invalid hash", block.Index))
 			break
 		}
 
 		// Validate transactions
 		if err := bc.ValidateBlockTransactions(block, bc.Blocks); err != nil {
 			fmt.Printf("Batch block #%d has invalid transactions: %v - stopping batch\n", block.Index, err)
+			peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d invalid txs", block.Index))
 			break
 		}
 
@@ -1199,22 +1242,214 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 		fmt.Printf("Added %d blocks from batch (chain height: %d)\n", added, bc.GetBlockCount())
 	}
 
+	// Handle fork: find common ancestor and attempt reorg
+	if needsReorg && len(msg.Blocks) > 0 {
+		pm.attemptReorg(peer, msg.Blocks)
+		return
+	}
+
 	// Clear sync flag so next round can proceed
 	peer.mutex.Lock()
 	peer.syncInProgress = false
 	peer.mutex.Unlock()
 
-	// Check if we need more blocks from this peer
+	// Only request more blocks if we actually made progress (avoid infinite loop on fork)
+	if added > 0 {
+		peer.mutex.RLock()
+		peerHeight := peer.StartHeight
+		peer.mutex.RUnlock()
+
+		ourHeight := bc.GetBlockCount()
+		if ourHeight < peerHeight {
+			fmt.Printf("Need more blocks from %s (our: %d, peer: %d)\n", peer.Addr, ourHeight, peerHeight)
+			pm.startIncrementalSync(peer)
+		} else {
+			fmt.Printf("Incremental sync complete with %s at height %d\n", peer.Addr, ourHeight)
+		}
+	}
+}
+
+// attemptReorg handles a chain fork by finding the common ancestor and switching
+// to the peer's chain if it has more cumulative proof-of-work.
+// It requests blocks going back from the fork detection point to find where chains diverge.
+func (pm *PeerManager) attemptReorg(peer *Peer, peerBlocks []*Block) {
+	if len(peerBlocks) == 0 {
+		return
+	}
+
+	bc := pm.node.Blockchain
+	bc.mutex.Lock()
+
+	// Find the fork point: walk backwards through our chain to find a block
+	// whose hash matches the first peer block's PreviousHash.
+	// The peer's block N has PreviousHash pointing to their block N-1.
+	// If we have a block with that same hash, that's the common ancestor.
+	forkIdx := int64(-1)
+
+	// Also check if ANY peer block's PreviousHash matches a block we have
+	// (the peer batch might include the fork point itself)
+	for _, pb := range peerBlocks {
+		if pb == nil {
+			continue
+		}
+		for i := int64(len(bc.Blocks)) - 1; i >= 0 && i >= int64(len(bc.Blocks))-500; i-- {
+			if bc.Blocks[i].Hash == pb.PreviousHash {
+				forkIdx = i
+				break
+			}
+		}
+		if forkIdx >= 0 {
+			// Trim peerBlocks to start from the block after forkIdx
+			trimmed := make([]*Block, 0, len(peerBlocks))
+			for _, b := range peerBlocks {
+				if b != nil && b.Index > forkIdx {
+					trimmed = append(trimmed, b)
+				}
+			}
+			peerBlocks = trimmed
+			break
+		}
+	}
+
+	if forkIdx < 0 {
+		// Can't find common ancestor in current batch — request older blocks
+		// Ask for blocks starting further back to find the fork point
+		ourHeight := int64(len(bc.Blocks))
+		searchFrom := ourHeight - 100
+		if searchFrom < 0 {
+			searchFrom = 0
+		}
+		bc.mutex.Unlock()
+
+		fmt.Printf("[reorg] Fork detected but common ancestor not in batch — requesting blocks from %d to find fork point\n",
+			searchFrom)
+
+		// Clear sync flag and request blocks from further back
+		peer.mutex.Lock()
+		peer.syncInProgress = false
+		peer.mutex.Unlock()
+
+		peer.SendMessage(MsgTypeGetBlocks, NewGetBlocksMsg(searchFrom, ourHeight+500))
+		return
+	}
+
+	if len(peerBlocks) == 0 {
+		bc.mutex.Unlock()
+		peer.mutex.Lock()
+		peer.syncInProgress = false
+		peer.mutex.Unlock()
+		return
+	}
+
+	fmt.Printf("[reorg] Fork detected at block #%d (our height: %d, peer provides %d blocks from #%d)\n",
+		forkIdx, len(bc.Blocks)-1, len(peerBlocks), peerBlocks[0].Index)
+
+	// Compare cumulative work: our chain from fork+1 to tip vs peer's blocks
+	ourWork := float64(0)
+	for i := forkIdx + 1; i < int64(len(bc.Blocks)); i++ {
+		bits := bc.Blocks[i].getEffectiveDifficultyBits()
+		ourWork += math.Pow(2, float64(bits))
+	}
+
+	peerWork := float64(0)
+	for _, b := range peerBlocks {
+		bits := b.getEffectiveDifficultyBits()
+		peerWork += math.Pow(2, float64(bits))
+	}
+
+	fmt.Printf("[reorg] Our work from fork: %.0f (%d blocks), peer work: %.0f (%d blocks)\n",
+		ourWork, int64(len(bc.Blocks))-forkIdx-1, peerWork, len(peerBlocks))
+
+	if peerWork <= ourWork {
+		fmt.Printf("[reorg] Our chain is heavier — keeping current chain\n")
+		bc.mutex.Unlock()
+		peer.mutex.Lock()
+		peer.syncInProgress = false
+		peer.mutex.Unlock()
+		return
+	}
+
+	// Peer's chain is heavier — validate all peer blocks before switching
+	fmt.Printf("[reorg] Peer chain is heavier — validating %d blocks for reorg...\n", len(peerBlocks))
+
+	// Build a temporary chain: our chain up to fork point + peer blocks
+	tempChain := make([]*Block, forkIdx+1, forkIdx+1+int64(len(peerBlocks)))
+	copy(tempChain, bc.Blocks[:forkIdx+1])
+
+	for _, block := range peerBlocks {
+		if block == nil {
+			continue
+		}
+
+		lastBlock := tempChain[len(tempChain)-1]
+
+		// Must connect
+		if block.PreviousHash != lastBlock.Hash {
+			fmt.Printf("[reorg] Peer block #%d doesn't connect in reorg chain — aborting\n", block.Index)
+			peer.AddMisbehavior(PenaltyInvalidBlock, "reorg blocks don't connect")
+			bc.mutex.Unlock()
+			peer.mutex.Lock()
+			peer.syncInProgress = false
+			peer.mutex.Unlock()
+			return
+		}
+
+		// Verify hash
+		if block.Hash != block.CalculateHash() {
+			fmt.Printf("[reorg] Peer block #%d has invalid hash — aborting reorg\n", block.Index)
+			peer.AddMisbehavior(PenaltyInvalidBlock, "reorg block invalid hash")
+			bc.mutex.Unlock()
+			peer.mutex.Lock()
+			peer.syncInProgress = false
+			peer.mutex.Unlock()
+			return
+		}
+
+		// Validate transactions against the temporary chain
+		if err := bc.ValidateBlockTransactions(block, tempChain); err != nil {
+			fmt.Printf("[reorg] Peer block #%d has invalid transactions: %v — aborting reorg\n", block.Index, err)
+			peer.AddMisbehavior(PenaltyInvalidBlock, "reorg block invalid txs")
+			bc.mutex.Unlock()
+			peer.mutex.Lock()
+			peer.syncInProgress = false
+			peer.mutex.Unlock()
+			return
+		}
+
+		tempChain = append(tempChain, block)
+	}
+
+	// All validated — apply the reorg
+	reorgDepth := int64(len(bc.Blocks)) - forkIdx - 1
+	fmt.Printf("[reorg] Reorganizing chain: removing %d blocks, adding %d blocks (fork at #%d)\n",
+		reorgDepth, len(peerBlocks), forkIdx)
+
+	// Replace our chain
+	bc.Blocks = tempChain
+
+	// Persist: save new blocks and remove orphaned files
+	bc.persistChainFrom(int(forkIdx + 1))
+
+	// Recalculate difficulty for the new chain tip
+	bc.recalcDifficultyFromChain()
+
+	newHeight := int64(len(bc.Blocks))
+	fmt.Printf("[reorg] Reorg complete. New chain height: %d\n", newHeight-1)
+
+	bc.mutex.Unlock()
+
+	// Clear sync flag and continue syncing if needed
+	peer.mutex.Lock()
+	peer.syncInProgress = false
+	peer.mutex.Unlock()
+
 	peer.mutex.RLock()
 	peerHeight := peer.StartHeight
 	peer.mutex.RUnlock()
 
-	ourHeight := bc.GetBlockCount()
-	if ourHeight < peerHeight {
-		fmt.Printf("Need more blocks from %s (our: %d, peer: %d)\n", peer.Addr, ourHeight, peerHeight)
-		pm.startIncrementalSync(peer)
-	} else if added > 0 {
-		fmt.Printf("Incremental sync complete with %s at height %d\n", peer.Addr, ourHeight)
+	if newHeight < peerHeight {
+		fmt.Printf("Need more blocks from %s after reorg (our: %d, peer: %d)\n", peer.Addr, newHeight, peerHeight)
+		go pm.startIncrementalSync(peer)
 	}
 }
 
