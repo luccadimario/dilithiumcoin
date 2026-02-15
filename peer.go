@@ -400,8 +400,11 @@ type PeerManager struct {
 	seedNodes []string
 
 	// State
-	started bool
-	stopCh  chan struct{}
+	started     bool
+	stopCh      chan struct{}
+	syncActive  int32 // atomic: 1 if sync in progress, 0 otherwise
+	lastSyncReq time.Time
+	syncMu      sync.Mutex
 }
 
 // NewPeerManager creates a new peer manager
@@ -947,7 +950,16 @@ func (pm *PeerManager) handleMempool(peer *Peer) {
 // ============================================================================
 
 // startIncrementalSync begins syncing by requesting headers from our tip.
+// Debounced to prevent request spam that triggers peer rate-limiting.
 func (pm *PeerManager) startIncrementalSync(peer *Peer) {
+	pm.syncMu.Lock()
+	if time.Since(pm.lastSyncReq) < 3*time.Second {
+		pm.syncMu.Unlock()
+		return // Too soon since last sync request
+	}
+	pm.lastSyncReq = time.Now()
+	pm.syncMu.Unlock()
+
 	ourHeight := pm.node.Blockchain.GetBlockCount()
 	// Request headers from our height onwards (let the peer decide the upper bound)
 	peer.SendMessage(MsgTypeGetHeaders, NewGetHeadersMsg(ourHeight, 0))
@@ -1005,6 +1017,13 @@ func (pm *PeerManager) handleHeaders(peer *Peer, msg *HeadersMsg) {
 
 	if needStart < 0 {
 		return // Nothing new
+	}
+
+	// Only request blocks that connect to our chain tip
+	if needStart != ourHeight {
+		fmt.Printf("[!] Peer %s has gap: we need block %d but first available is %d — peer chain may be incomplete\n",
+			peer.Addr, ourHeight, needStart)
+		return
 	}
 
 	// Request full blocks in batches of 500
