@@ -30,7 +30,7 @@ func blockFileName(index int64) string {
 	return fmt.Sprintf("%09d.json", index)
 }
 
-// SaveBlock writes a single block to disk.
+// SaveBlock writes a single block to disk with fsync for durability.
 func (s *ChainStore) SaveBlock(block *Block) error {
 	data, err := json.Marshal(block)
 	if err != nil {
@@ -38,8 +38,30 @@ func (s *ChainStore) SaveBlock(block *Block) error {
 	}
 
 	path := filepath.Join(s.dir, blockFileName(block.Index))
-	if err := os.WriteFile(path, data, 0644); err != nil {
+
+	// Write to temp file then rename for atomicity
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for block %d: %w", block.Index, err)
+	}
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("failed to write block %d: %w", block.Index, err)
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to sync block %d: %w", block.Index, err)
+	}
+	f.Close()
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename block %d: %w", block.Index, err)
 	}
 
 	return nil
@@ -123,7 +145,22 @@ func (s *ChainStore) LoadChain() ([]*Block, error) {
 			return nil, fmt.Errorf("failed to parse block file %s: %w", file, err)
 		}
 
+		// Validate chain continuity: each block must connect to the previous
+		if len(blocks) > 0 {
+			prev := blocks[len(blocks)-1]
+			if block.PreviousHash != prev.Hash {
+				fmt.Printf("[!] Chain gap detected at block %d (file %s): previous_hash doesn't match block %d hash. Loaded %d valid blocks.\n",
+					block.Index, file, prev.Index, len(blocks))
+				break // Stop loading — sync will fill in the rest
+			}
+		}
+
 		blocks = append(blocks, &block)
+	}
+
+	if len(blocks) < len(files) {
+		fmt.Printf("[!] Loaded %d of %d block files (stopped at first gap). Peer sync will recover missing blocks.\n",
+			len(blocks), len(files))
 	}
 
 	return blocks, nil
