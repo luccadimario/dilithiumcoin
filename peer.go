@@ -1414,6 +1414,20 @@ func (pm *PeerManager) attemptReorg(peer *Peer, peerBlocks []*Block) {
 			return
 		}
 
+		// Verify proof-of-work: block hash must actually meet its stated difficulty
+		// Without this, an attacker could claim high difficulty without doing the work
+		blockBits := block.getEffectiveDifficultyBits()
+		if blockBits > 0 && !meetsDifficultyBits(block.Hash, blockBits) {
+			fmt.Printf("[reorg] Peer block #%d claims %d bits but hash doesn't meet it — aborting reorg\n",
+				block.Index, blockBits)
+			peer.AddMisbehavior(PenaltyInvalidBlock, "reorg block PoW doesn't meet stated difficulty")
+			bc.mutex.Unlock()
+			peer.mutex.Lock()
+			peer.syncInProgress = false
+			peer.mutex.Unlock()
+			return
+		}
+
 		// Validate transactions against the temporary chain
 		if err := bc.ValidateBlockTransactions(block, tempChain); err != nil {
 			fmt.Printf("[reorg] Peer block #%d has invalid transactions: %v — aborting reorg\n", block.Index, err)

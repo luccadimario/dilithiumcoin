@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"net"
 	"sync"
 	"testing"
@@ -436,13 +435,10 @@ func buildTestChain(n int, diffBits int) []*Block {
 	blocks := make([]*Block, 0, n)
 
 	genesis := &Block{
-		Index:        0,
-		Timestamp:    1000,
-		PreviousHash: "0",
-		Transactions: []*Transaction{
-			{From: "SYSTEM", To: "miner", Amount: GetBlockReward(0), Timestamp: 1000},
-		},
-		Difficulty:     1,
+		Index:          0,
+		Timestamp:      1000,
+		PreviousHash:   "0",
+		Transactions:   []*Transaction{{From: "SYSTEM", To: "miner", Amount: GetBlockReward(0), Timestamp: 1000}},
 		DifficultyBits: diffBits,
 		Nonce:          0,
 	}
@@ -452,13 +448,10 @@ func buildTestChain(n int, diffBits int) []*Block {
 	for i := 1; i < n; i++ {
 		prev := blocks[i-1]
 		block := &Block{
-			Index:        int64(i),
-			Timestamp:    prev.Timestamp + 60,
-			PreviousHash: prev.Hash,
-			Transactions: []*Transaction{
-				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
-			},
-			Difficulty:     1,
+			Index:          int64(i),
+			Timestamp:      prev.Timestamp + 60,
+			PreviousHash:   prev.Hash,
+			Transactions:   []*Transaction{{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60}},
 			DifficultyBits: diffBits,
 			Nonce:          int64(i * 100),
 		}
@@ -473,9 +466,9 @@ func TestAttemptReorgFindsCommonAncestor(t *testing.T) {
 	t.Parallel()
 
 	// Build two chains that share blocks 0-4 but diverge at block 5
-	commonChain := buildTestChain(5, 28) // blocks 0-4
+	commonChain := buildTestChain(5, 0) // blocks 0-4
 
-	// Our chain: common + 3 blocks at diff 28
+	// Our chain: common + 3 blocks (DifficultyBits 0 = legacy mode, bypasses PoW check in tests)
 	ourChain := make([]*Block, len(commonChain))
 	copy(ourChain, commonChain)
 	for i := 5; i < 8; i++ {
@@ -487,14 +480,13 @@ func TestAttemptReorgFindsCommonAncestor(t *testing.T) {
 			Transactions: []*Transaction{
 				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
 			},
-			DifficultyBits: 28,
-			Nonce:          int64(i * 1000), // different nonce = different hash
+			Nonce: int64(i * 1000), // different nonce = different hash
 		}
 		block.Hash = block.CalculateHash()
 		ourChain = append(ourChain, block)
 	}
 
-	// Peer chain: common + 5 blocks at diff 28 (more work)
+	// Peer chain: common + 5 blocks (more blocks = more cumulative work)
 	peerChain := make([]*Block, len(commonChain))
 	copy(peerChain, commonChain)
 	for i := 5; i < 10; i++ {
@@ -506,8 +498,7 @@ func TestAttemptReorgFindsCommonAncestor(t *testing.T) {
 			Transactions: []*Transaction{
 				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
 			},
-			DifficultyBits: 28,
-			Nonce:          int64(i * 2000), // different nonce from our chain
+			Nonce: int64(i * 2000), // different nonce from our chain
 		}
 		block.Hash = block.CalculateHash()
 		peerChain = append(peerChain, block)
@@ -549,12 +540,12 @@ func TestAttemptReorgFindsCommonAncestor(t *testing.T) {
 func TestAttemptReorgKeepsHeavierChain(t *testing.T) {
 	t.Parallel()
 
-	commonChain := buildTestChain(5, 28) // blocks 0-4
+	commonChain := buildTestChain(5, 0) // blocks 0-4
 
-	// Our chain: common + 5 blocks at diff 30 (HEAVIER)
+	// Our chain: common + 7 blocks (MORE blocks = heavier)
 	ourChain := make([]*Block, len(commonChain))
 	copy(ourChain, commonChain)
-	for i := 5; i < 10; i++ {
+	for i := 5; i < 12; i++ {
 		prev := ourChain[i-1]
 		block := &Block{
 			Index:        int64(i),
@@ -563,17 +554,17 @@ func TestAttemptReorgKeepsHeavierChain(t *testing.T) {
 			Transactions: []*Transaction{
 				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
 			},
-			DifficultyBits: 30, // higher difficulty = more work per block
-			Nonce:          int64(i * 1000),
+			Difficulty: 1,
+			Nonce:      int64(i * 1000),
 		}
 		block.Hash = block.CalculateHash()
 		ourChain = append(ourChain, block)
 	}
 
-	// Peer chain: common + 5 blocks at diff 28 (lighter per block)
+	// Peer chain: common + 3 blocks (fewer blocks = lighter)
 	peerChain := make([]*Block, len(commonChain))
 	copy(peerChain, commonChain)
-	for i := 5; i < 10; i++ {
+	for i := 5; i < 8; i++ {
 		prev := peerChain[i-1]
 		block := &Block{
 			Index:        int64(i),
@@ -582,18 +573,11 @@ func TestAttemptReorgKeepsHeavierChain(t *testing.T) {
 			Transactions: []*Transaction{
 				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
 			},
-			DifficultyBits: 28, // lower difficulty
-			Nonce:          int64(i * 2000),
+			Difficulty: 1,
+			Nonce:      int64(i * 2000),
 		}
 		block.Hash = block.CalculateHash()
 		peerChain = append(peerChain, block)
-	}
-
-	// Our chain should be heavier: 5 * 2^30 > 5 * 2^28
-	ourWork := 5 * math.Pow(2, 30)
-	peerWork := 5 * math.Pow(2, 28)
-	if ourWork <= peerWork {
-		t.Fatalf("test setup wrong: our work %.0f should be > peer work %.0f", ourWork, peerWork)
 	}
 
 	bc := &Blockchain{Blocks: ourChain}
@@ -602,15 +586,15 @@ func TestAttemptReorgKeepsHeavierChain(t *testing.T) {
 	pm.node = node
 	peer := newTestPeer("10.0.0.2:1234", pm)
 	pm.peers[peer.Addr] = peer
-	peer.StartHeight = 10
+	peer.StartHeight = 8
 
 	origBlock5Hash := ourChain[5].Hash
 
 	pm.attemptReorg(peer, peerChain[5:])
 
-	// Should NOT have switched — our chain is heavier
-	if len(bc.Blocks) != 10 {
-		t.Errorf("chain length should stay 10, got %d", len(bc.Blocks))
+	// Should NOT have switched — our chain is heavier (7 blocks > 3 blocks)
+	if len(bc.Blocks) != 12 {
+		t.Errorf("chain length should stay 12, got %d", len(bc.Blocks))
 	}
 	if bc.Blocks[5].Hash != origBlock5Hash {
 		t.Error("block 5 should still be from our chain (heavier)")
@@ -620,7 +604,7 @@ func TestAttemptReorgKeepsHeavierChain(t *testing.T) {
 func TestAttemptReorgRejectsInvalidHash(t *testing.T) {
 	t.Parallel()
 
-	commonChain := buildTestChain(5, 28)
+	commonChain := buildTestChain(5, 0)
 
 	ourChain := make([]*Block, len(commonChain))
 	copy(ourChain, commonChain)
@@ -633,8 +617,8 @@ func TestAttemptReorgRejectsInvalidHash(t *testing.T) {
 			Transactions: []*Transaction{
 				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
 			},
-			DifficultyBits: 28,
-			Nonce:          int64(i * 1000),
+			Difficulty: 1,
+			Nonce:      int64(i * 1000),
 		}
 		block.Hash = block.CalculateHash()
 		ourChain = append(ourChain, block)
@@ -652,15 +636,15 @@ func TestAttemptReorgRejectsInvalidHash(t *testing.T) {
 			Transactions: []*Transaction{
 				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
 			},
-			DifficultyBits: 28,
-			Nonce:          int64(i * 2000),
+			Difficulty: 1,
+			Nonce:      int64(i * 2000),
 		}
 		block.Hash = block.CalculateHash()
 		peerChain = append(peerChain, block)
 	}
 
 	// Tamper with block 6's hash
-	peerChain[6].Hash = "0000000000000000tampered"
+	peerChain[6].Hash = "tampered_hash_value"
 
 	bc := &Blockchain{Blocks: ourChain}
 	node := &Node{Blockchain: bc}
@@ -684,6 +668,72 @@ func TestAttemptReorgRejectsInvalidHash(t *testing.T) {
 	}
 }
 
+func TestAttemptReorgRejectsFakeHighDifficulty(t *testing.T) {
+	t.Parallel()
+
+	commonChain := buildTestChain(5, 0)
+
+	// Our chain: common + 3 blocks
+	ourChain := make([]*Block, len(commonChain))
+	copy(ourChain, commonChain)
+	for i := 5; i < 8; i++ {
+		prev := ourChain[i-1]
+		block := &Block{
+			Index:        int64(i),
+			Timestamp:    prev.Timestamp + 60,
+			PreviousHash: prev.Hash,
+			Transactions: []*Transaction{
+				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
+			},
+			Difficulty: 1,
+			Nonce:      int64(i * 1000),
+		}
+		block.Hash = block.CalculateHash()
+		ourChain = append(ourChain, block)
+	}
+
+	// Attacker chain: claims DifficultyBits: 100 but hash doesn't meet it
+	// This simulates the exact attack the user is worried about
+	attackChain := make([]*Block, len(commonChain))
+	copy(attackChain, commonChain)
+	for i := 5; i < 8; i++ {
+		prev := attackChain[i-1]
+		block := &Block{
+			Index:        int64(i),
+			Timestamp:    prev.Timestamp + 60,
+			PreviousHash: prev.Hash,
+			Transactions: []*Transaction{
+				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
+			},
+			DifficultyBits: 100, // Claims extremely high difficulty
+			Nonce:          int64(i * 3000),
+		}
+		block.Hash = block.CalculateHash() // Hash won't actually have 100 leading zero bits
+		attackChain = append(attackChain, block)
+	}
+
+	bc := &Blockchain{Blocks: ourChain}
+	node := &Node{Blockchain: bc}
+	pm := newTestPeerManager(nil)
+	pm.node = node
+	peer := newTestPeer("10.0.0.7:1234", pm)
+	pm.peers[peer.Addr] = peer
+	peer.StartHeight = 8
+
+	origLen := len(bc.Blocks)
+	pm.attemptReorg(peer, attackChain[5:])
+
+	// Should NOT reorg — attacker's blocks claim high difficulty but hash doesn't meet it
+	if len(bc.Blocks) != origLen {
+		t.Errorf("chain length should stay %d after fake difficulty reorg, got %d", origLen, len(bc.Blocks))
+	}
+
+	// Attacker should be banned
+	if !pm.IsBanned("10.0.0.7") {
+		t.Error("peer should be banned for claiming high difficulty without meeting PoW target")
+	}
+}
+
 // ============================================================================
 // handleBlocks LOOP PREVENTION TEST
 // ============================================================================
@@ -691,7 +741,7 @@ func TestAttemptReorgRejectsInvalidHash(t *testing.T) {
 func TestHandleBlocksNoLoopOnFork(t *testing.T) {
 	t.Parallel()
 
-	commonChain := buildTestChain(5, 28)
+	commonChain := buildTestChain(5, 0)
 
 	// Our chain
 	ourChain := make([]*Block, len(commonChain))
@@ -705,8 +755,8 @@ func TestHandleBlocksNoLoopOnFork(t *testing.T) {
 			Transactions: []*Transaction{
 				{From: "SYSTEM", To: "miner", Amount: GetBlockReward(int64(i)), Timestamp: prev.Timestamp + 60},
 			},
-			DifficultyBits: 28,
-			Nonce:          int64(i * 1000),
+			Difficulty: 1,
+			Nonce:      int64(i * 1000),
 		}
 		block.Hash = block.CalculateHash()
 		ourChain = append(ourChain, block)
@@ -727,11 +777,10 @@ func TestHandleBlocksNoLoopOnFork(t *testing.T) {
 	badBlocks := make([]*Block, 3)
 	for i := 0; i < 3; i++ {
 		badBlocks[i] = &Block{
-			Index:          int64(8 + i),
-			PreviousHash:   "completely_wrong_hash",
-			Timestamp:      commonChain[4].Timestamp + int64(60*(i+4)),
-			DifficultyBits: 28,
-			Nonce:          int64(i * 9999),
+			Index:        int64(8 + i),
+			PreviousHash: "completely_wrong_hash",
+			Timestamp:    commonChain[4].Timestamp + int64(60*(i+4)),
+			Nonce: int64(i * 9999),
 		}
 		badBlocks[i].Hash = badBlocks[i].CalculateHash()
 	}
