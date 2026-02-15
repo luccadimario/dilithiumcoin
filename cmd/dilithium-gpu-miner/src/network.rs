@@ -9,10 +9,16 @@ pub struct Transaction {
     pub from: String,
     pub to: String,
     pub amount: i64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fee: i64,
     pub timestamp: i64,
     pub signature: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub public_key: String,
+}
+
+fn is_zero(v: &i64) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

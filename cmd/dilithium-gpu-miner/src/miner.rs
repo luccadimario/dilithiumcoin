@@ -242,10 +242,13 @@ impl Miner {
     }
 
     fn construct_block(&self, template: &BlockTemplate, pending_txs: Vec<Transaction>) -> Block {
+        let total_fees: i64 = pending_txs.iter().map(|t| t.fee).sum();
+
         let coinbase = Transaction {
             from: "SYSTEM".to_string(),
             to: self.wallet_address.clone(),
-            amount: template.reward,
+            amount: template.reward + total_fees,
+            fee: 0,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

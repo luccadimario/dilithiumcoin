@@ -60,17 +60,19 @@ type Transaction struct {
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Amount    int64  `json:"amount"`
+	Fee       int64  `json:"fee,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
 	PublicKey string `json:"public_key,omitempty"`
 }
 
 // NewTransaction creates a new transaction
-func NewTransaction(from string, to string, amount int64) *Transaction {
+func NewTransaction(from string, to string, amount int64, fee int64) *Transaction {
 	return &Transaction{
 		From:      from,
 		To:        to,
 		Amount:    amount,
+		Fee:       fee,
 		Timestamp: time.Now().Unix(),
 		Signature: "",
 	}
@@ -79,7 +81,8 @@ func NewTransaction(from string, to string, amount int64) *Transaction {
 // Sign signs the transaction with a wallet
 func (t *Transaction) Sign(wallet *Wallet) error {
 	// Create transaction data string with chain ID for replay protection (shannon #11)
-	txData := fmt.Sprintf("%s:%s%s%d%d", NetworkName, t.From, t.To, t.Amount, t.Timestamp)
+	// Includes fee in signing data for fee commitment
+	txData := fmt.Sprintf("%s:%s%s%d%d%d", NetworkName, t.From, t.To, t.Amount, t.Fee, t.Timestamp)
 
 	// Sign the transaction
 	signature, err := wallet.SignTransaction(txData)

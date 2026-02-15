@@ -117,13 +117,18 @@ func (mp *Mempool) AddTransaction(tx *Transaction) error {
 		return fmt.Errorf("mempool is full")
 	}
 
-	// Create entry
+	// Create entry with fee from transaction
+	txSize := len(tx.ToJSON())
+	var feePerByte int64
+	if txSize > 0 {
+		feePerByte = tx.Fee / int64(txSize)
+	}
 	entry := &MempoolEntry{
 		Tx:         tx,
 		AddedAt:    time.Now(),
-		Size:       len(tx.ToJSON()),
-		Fee:        0, // Fee calculation would go here
-		FeePerByte: 0,
+		Size:       txSize,
+		Fee:        tx.Fee,
+		FeePerByte: feePerByte,
 	}
 
 	mp.entries[tx.Signature] = entry

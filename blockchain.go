@@ -51,6 +51,13 @@ const (
 	DAAv2ForkHeight = 600
 
 	// ============================================================================
+	// TRANSACTION FEES
+	// ============================================================================
+
+	// MinTransactionFee is the minimum fee for non-SYSTEM transactions (0.0001 DLT)
+	MinTransactionFee int64 = 10000
+
+	// ============================================================================
 	// SUPPLY CONTROL (Bitcoin-like halving)
 	// ============================================================================
 
@@ -246,6 +253,11 @@ func (bc *Blockchain) AddTransactionIfNew(tx *Transaction) (bool, error) {
 		return false, err
 	}
 
+	// Enforce minimum transaction fee for new mempool transactions (not historical blocks)
+	if tx.From != "SYSTEM" && tx.Fee < MinTransactionFee {
+		return false, fmt.Errorf("transaction fee %d below minimum %d (0.0001 DLT)", tx.Fee, MinTransactionFee)
+	}
+
 	bc.mutex.Lock()
 	defer bc.mutex.Unlock()
 
@@ -259,17 +271,18 @@ func (bc *Blockchain) AddTransactionIfNew(tx *Transaction) (bool, error) {
 		// Calculate available balance (confirmed - pending outgoing)
 		availableBalance := bc.getBalanceLocked(tx.From)
 
-		// Subtract pending outgoing transactions from the same address
+		// Subtract pending outgoing transactions from the same address (amount + fee)
 		for _, pendingTx := range bc.PendingTransactions {
 			if pendingTx.From == tx.From {
-				availableBalance -= pendingTx.Amount
+				availableBalance -= pendingTx.Amount + pendingTx.Fee
 			}
 		}
 
-		// Check if sender has sufficient funds
-		if availableBalance < tx.Amount {
-			return false, fmt.Errorf("insufficient funds: address %s has %s available, needs %s",
-				tx.From, FormatDLT(availableBalance), FormatDLT(tx.Amount))
+		// Check if sender has sufficient funds (amount + fee)
+		totalCost := tx.Amount + tx.Fee
+		if availableBalance < totalCost {
+			return false, fmt.Errorf("insufficient funds: address %s has %s available, needs %s (amount) + %s (fee)",
+				tx.From, FormatDLT(availableBalance), FormatDLT(tx.Amount), FormatDLT(tx.Fee))
 		}
 	}
 
@@ -295,12 +308,18 @@ func (bc *Blockchain) MinePendingTransactionsWithCancel(minerAddress string, can
 	nextBlockHeight := bc.Blocks[len(bc.Blocks)-1].Index + 1
 	blockReward := GetBlockReward(nextBlockHeight)
 
+	// Sum fees from all pending transactions
+	var totalFees int64
+	for _, tx := range bc.PendingTransactions {
+		totalFees += tx.Fee
+	}
+
 	// Create coinbase (mining reward) transaction
-	// This is how new coins are created - miners get rewarded for securing the network
+	// Miners get block reward + transaction fees
 	rewardTx := &Transaction{
 		From:      "SYSTEM",
 		To:        minerAddress,
-		Amount:    blockReward,
+		Amount:    blockReward + totalFees,
 		Timestamp: time.Now().Unix(),
 		Signature: fmt.Sprintf("coinbase-%d-%d", nextBlockHeight, time.Now().UnixNano()),
 	}
@@ -367,12 +386,69 @@ func (bc *Blockchain) GetLastBlock() *Block {
 }
 
 // GetBlocks returns a copy of all blocks
+// Deprecated: Use GetBlockRange() for large chains to avoid full copies.
 func (bc *Blockchain) GetBlocks() []*Block {
 	bc.mutex.RLock()
 	defer bc.mutex.RUnlock()
 	blocks := make([]*Block, len(bc.Blocks))
 	copy(blocks, bc.Blocks)
 	return blocks
+}
+
+// GetBlockRange returns a slice of blocks from start (inclusive) to end (exclusive).
+// Returns nil if range is invalid. Uses direct slice indexing (no full copy).
+func (bc *Blockchain) GetBlockRange(start, end int64) []*Block {
+	bc.mutex.RLock()
+	defer bc.mutex.RUnlock()
+
+	chainLen := int64(len(bc.Blocks))
+	if start < 0 {
+		start = 0
+	}
+	if end > chainLen {
+		end = chainLen
+	}
+	if start >= end {
+		return nil
+	}
+
+	result := make([]*Block, end-start)
+	copy(result, bc.Blocks[start:end])
+	return result
+}
+
+// GetHeaderRange returns lightweight block headers for the given range.
+// start is inclusive, end is exclusive.
+func (bc *Blockchain) GetHeaderRange(start, end int64) []*BlockHeader {
+	bc.mutex.RLock()
+	defer bc.mutex.RUnlock()
+
+	chainLen := int64(len(bc.Blocks))
+	if start < 0 {
+		start = 0
+	}
+	if end > chainLen {
+		end = chainLen
+	}
+	if start >= end {
+		return nil
+	}
+
+	headers := make([]*BlockHeader, 0, end-start)
+	for i := start; i < end; i++ {
+		b := bc.Blocks[i]
+		headers = append(headers, &BlockHeader{
+			Index:          b.Index,
+			Timestamp:      b.Timestamp,
+			PreviousHash:   b.PreviousHash,
+			Hash:           b.Hash,
+			Nonce:          b.Nonce,
+			Difficulty:     b.Difficulty,
+			DifficultyBits: b.DifficultyBits,
+			TxCount:        len(b.Transactions),
+		})
+	}
+	return headers
 }
 
 // GetBlockCount returns the number of blocks
@@ -1096,8 +1172,8 @@ func VerifyTransactionSignature(tx *Transaction) error {
 	}
 
 	// Recreate the signed data with chain ID for replay protection (shannon #11)
-	// Try new format first, fall back to legacy for pre-upgrade transactions
-	txData := fmt.Sprintf("%s:%s%s%d%d", NetworkName, tx.From, tx.To, tx.Amount, tx.Timestamp)
+	// Try new format (with fee) first, then old format (without fee), then legacy (no chain ID)
+	txDataWithFee := fmt.Sprintf("%s:%s%s%d%d%d", NetworkName, tx.From, tx.To, tx.Amount, tx.Fee, tx.Timestamp)
 
 	// Decode signature
 	sigBytes, err := hex.DecodeString(tx.Signature)
@@ -1105,12 +1181,16 @@ func VerifyTransactionSignature(tx *Transaction) error {
 		return fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
-	// Verify signature - try new format with chain ID first
-	if !mode3.Verify(&pk, []byte(txData), sigBytes) {
-		// Fallback to legacy format for pre-upgrade transactions
-		legacyTxData := fmt.Sprintf("%s%s%d%d", tx.From, tx.To, tx.Amount, tx.Timestamp)
-		if !mode3.Verify(&pk, []byte(legacyTxData), sigBytes) {
-			return fmt.Errorf("signature verification failed")
+	// Verify signature - try new format with fee first
+	if !mode3.Verify(&pk, []byte(txDataWithFee), sigBytes) {
+		// Fallback to pre-fee format (chain ID but no fee) for existing chain transactions
+		txDataNoFee := fmt.Sprintf("%s:%s%s%d%d", NetworkName, tx.From, tx.To, tx.Amount, tx.Timestamp)
+		if !mode3.Verify(&pk, []byte(txDataNoFee), sigBytes) {
+			// Fallback to legacy format (no chain ID, no fee) for very old transactions
+			legacyTxData := fmt.Sprintf("%s%s%d%d", tx.From, tx.To, tx.Amount, tx.Timestamp)
+			if !mode3.Verify(&pk, []byte(legacyTxData), sigBytes) {
+				return fmt.Errorf("signature verification failed")
+			}
 		}
 	}
 
@@ -1190,10 +1270,10 @@ func (bc *Blockchain) GetAvailableBalance(address string) int64 {
 
 	balance := bc.getBalanceLocked(address)
 
-	// Subtract pending outgoing transactions
+	// Subtract pending outgoing transactions (amount + fee)
 	for _, tx := range bc.PendingTransactions {
 		if tx.From == address {
-			balance -= tx.Amount
+			balance -= (tx.Amount + tx.Fee)
 		}
 	}
 
@@ -1257,7 +1337,11 @@ func (bc *Blockchain) ensureBalanceCache() {
 			if tx.To != "" {
 				bc.balanceCache[tx.To] += tx.Amount
 			}
-			if tx.From != "" {
+			if tx.From != "" && tx.From != "SYSTEM" {
+				// Sender pays amount + fee
+				bc.balanceCache[tx.From] -= (tx.Amount + tx.Fee)
+			} else if tx.From != "" {
+				// SYSTEM (coinbase) — just debit Amount (fee is 0)
 				bc.balanceCache[tx.From] -= tx.Amount
 			}
 		}
@@ -1288,8 +1372,8 @@ func (bc *Blockchain) GetAddressInfo(address string) (balance, received, sent in
 				isRelevant = true
 			}
 			if tx.From == address {
-				balance -= tx.Amount
-				sent += tx.Amount
+				balance -= (tx.Amount + tx.Fee)
+				sent += tx.Amount + tx.Fee
 				isRelevant = true
 			}
 			if isRelevant {
@@ -1362,7 +1446,7 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 				balances[tx.To] += tx.Amount
 			}
 			if tx.From != "" && tx.From != "SYSTEM" {
-				balances[tx.From] -= tx.Amount
+				balances[tx.From] -= (tx.Amount + tx.Fee)
 			}
 		}
 	}
@@ -1378,13 +1462,21 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 		return fmt.Errorf("block %d must have exactly 1 coinbase transaction, has %d", block.Index, coinbaseCount)
 	}
 
-	// Verify coinbase amount matches expected block reward
+	// Sum fees from non-coinbase transactions
+	var totalFees int64
+	for _, tx := range block.Transactions {
+		if tx.From != "SYSTEM" {
+			totalFees += tx.Fee
+		}
+	}
+
+	// Verify coinbase amount matches expected block reward + fees
 	for _, tx := range block.Transactions {
 		if tx.From == "SYSTEM" {
-			expectedReward := GetBlockReward(block.Index)
+			expectedReward := GetBlockReward(block.Index) + totalFees
 			if tx.Amount != expectedReward {
-				return fmt.Errorf("block %d coinbase amount %d does not match expected reward %d",
-					block.Index, tx.Amount, expectedReward)
+				return fmt.Errorf("block %d coinbase amount %d does not match expected reward %d (base %d + fees %d)",
+					block.Index, tx.Amount, expectedReward, GetBlockReward(block.Index), totalFees)
 			}
 			break
 		}
@@ -1397,19 +1489,21 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 			continue
 		}
 
-		// Basic validation (includes signature verification)
+		// Basic validation (includes signature verification and fee check)
 		if err := validateTransaction(tx); err != nil {
 			return fmt.Errorf("invalid transaction in block %d: %v", block.Index, err)
 		}
 
-		// Check sender has sufficient balance
-		if balances[tx.From] < tx.Amount {
-			return fmt.Errorf("insufficient funds in block %d: %s has %s, needs %s",
-				block.Index, tx.From, FormatDLT(balances[tx.From]), FormatDLT(tx.Amount))
+		// Check sender has sufficient balance for amount + fee
+		totalCost := tx.Amount + tx.Fee
+		if balances[tx.From] < totalCost {
+			return fmt.Errorf("insufficient funds in block %d: %s has %s, needs %s (amount %s + fee %s)",
+				block.Index, tx.From, FormatDLT(balances[tx.From]), FormatDLT(totalCost),
+				FormatDLT(tx.Amount), FormatDLT(tx.Fee))
 		}
 
-		// Update balances for subsequent transactions in same block
-		balances[tx.From] -= tx.Amount
+		// Update balances: sender pays amount + fee, recipient gets amount only
+		balances[tx.From] -= totalCost
 		balances[tx.To] += tx.Amount
 	}
 

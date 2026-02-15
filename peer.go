@@ -604,6 +604,16 @@ func (pm *PeerManager) handleVersion(peer *Peer, msg *VersionMsg) {
 		return
 	}
 
+	// Reject peers with older protocol versions
+	if msg.Version < ProtocolVersion {
+		fmt.Printf("Rejecting v%d peer %s (require v%d)\n", msg.Version, peer.Addr, ProtocolVersion)
+		reject := NewRejectMsg(MsgTypeVersion, RejectObsolete,
+			fmt.Sprintf("protocol version %d too old, need %d", msg.Version, ProtocolVersion), "")
+		peer.SendMessage(MsgTypeReject, reject)
+		peer.Stop()
+		return
+	}
+
 	// Store peer info including their advertised listen port
 	peer.mutex.Lock()
 	peer.Version = msg.Version
@@ -909,15 +919,7 @@ func (pm *PeerManager) handleBlock(peer *Peer, msg *BlockMsg) {
 		return
 	}
 
-	// Use existing block handling logic from node
-	// This creates a legacy message format for compatibility
-	legacyMsg := &Message{
-		Type:      "block",
-		Data:      msg.Block,
-		Timestamp: time.Now().Unix(),
-	}
-
-	pm.node.handleMessage(*legacyMsg, peer.Addr)
+	pm.node.AddBlock(msg.Block, peer.Addr)
 
 	// Announce to other peers if accepted
 	pm.BroadcastInv([]*InvVector{NewInvVector(InvTypeBlock, msg.Block.Hash)}, peer.Addr)
@@ -953,15 +955,13 @@ func (pm *PeerManager) startIncrementalSync(peer *Peer) {
 
 // handleGetHeaders responds with block headers for the requested range.
 func (pm *PeerManager) handleGetHeaders(peer *Peer, msg *GetHeadersMsg) {
-	blocks := pm.node.Blockchain.GetBlocks()
-	chainLen := int64(len(blocks))
+	chainLen := pm.node.Blockchain.GetBlockCount()
 
 	start := msg.StartHeight
 	if start < 0 {
 		start = 0
 	}
 	if start >= chainLen {
-		// We don't have blocks they need
 		peer.SendMessage(MsgTypeHeaders, NewHeadersMsg(nil))
 		return
 	}
@@ -972,26 +972,12 @@ func (pm *PeerManager) handleGetHeaders(peer *Peer, msg *GetHeadersMsg) {
 	}
 
 	// Limit to 2000 headers per response
-	const maxHeaders = 2000
+	const maxHeaders int64 = 2000
 	if stop-start > maxHeaders {
 		stop = start + maxHeaders
 	}
 
-	headers := make([]*BlockHeader, 0, stop-start)
-	for i := start; i < stop; i++ {
-		b := blocks[i]
-		headers = append(headers, &BlockHeader{
-			Index:          b.Index,
-			Timestamp:      b.Timestamp,
-			PreviousHash:   b.PreviousHash,
-			Hash:           b.Hash,
-			Nonce:          b.Nonce,
-			Difficulty:     b.Difficulty,
-			DifficultyBits: b.DifficultyBits,
-			TxCount:        len(b.Transactions),
-		})
-	}
-
+	headers := pm.node.Blockchain.GetHeaderRange(start, stop)
 	peer.SendMessage(MsgTypeHeaders, NewHeadersMsg(headers))
 }
 
@@ -1034,8 +1020,7 @@ func (pm *PeerManager) handleHeaders(peer *Peer, msg *HeadersMsg) {
 
 // handleGetBlocks responds with full blocks for the requested range.
 func (pm *PeerManager) handleGetBlocks(peer *Peer, msg *GetBlocksMsg) {
-	blocks := pm.node.Blockchain.GetBlocks()
-	chainLen := int64(len(blocks))
+	chainLen := pm.node.Blockchain.GetBlockCount()
 
 	start := msg.StartHeight
 	if start < 0 {
@@ -1052,16 +1037,12 @@ func (pm *PeerManager) handleGetBlocks(peer *Peer, msg *GetBlocksMsg) {
 	}
 
 	// Limit to 500 blocks per response
-	const maxBlocks = 500
+	const maxBlocks int64 = 500
 	if stop-start > maxBlocks {
 		stop = start + maxBlocks
 	}
 
-	result := make([]*Block, 0, stop-start)
-	for i := start; i < stop; i++ {
-		result = append(result, blocks[i])
-	}
-
+	result := pm.node.Blockchain.GetBlockRange(start, stop)
 	peer.SendMessage(MsgTypeBlocks, NewBlocksMsg(result))
 }
 
@@ -1080,13 +1061,7 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 			continue
 		}
 
-		// Use the existing block handler logic
-		legacyMsg := &Message{
-			Type:      "block",
-			Data:      block,
-			Timestamp: time.Now().Unix(),
-		}
-		pm.node.handleMessage(*legacyMsg, peer.Addr)
+		pm.node.AddBlock(block, peer.Addr)
 		added++
 	}
 

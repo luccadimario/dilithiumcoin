@@ -54,7 +54,8 @@ func cmdSend(args []string) {
 			flagArgs = append(flagArgs, args[i])
 			// If this flag takes a value, grab the next arg too
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") &&
-				(args[i] == "--node" || args[i] == "-node" || args[i] == "--wallet" || args[i] == "-wallet") {
+				(args[i] == "--node" || args[i] == "-node" || args[i] == "--wallet" || args[i] == "-wallet" ||
+					args[i] == "--fee" || args[i] == "-fee") {
 				flagArgs = append(flagArgs, args[i+1])
 				i++
 			}
@@ -66,6 +67,7 @@ func cmdSend(args []string) {
 	fs := flag.NewFlagSet("send", flag.ExitOnError)
 	walletDir := fs.String("wallet", DefaultWalletDir, "Wallet directory")
 	nodeURL := fs.String("node", "http://localhost:8001", "Node API URL")
+	feeStr := fs.String("fee", "0.0001", "Transaction fee in DLT (default: 0.0001)")
 	fs.Parse(flagArgs)
 
 	if len(positionalArgs) < 2 {
@@ -81,6 +83,12 @@ func cmdSend(args []string) {
 	amount, err := ParseDLT(positionalArgs[1])
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fee, err := ParseDLT(*feeStr)
+	if err != nil {
+		fmt.Printf("Error parsing fee: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -103,9 +111,9 @@ func cmdSend(args []string) {
 	pubKeyBytes, _ := pk.MarshalBinary()
 	publicKeyHex := hex.EncodeToString(pubKeyBytes)
 
-	// Create and sign transaction
+	// Create and sign transaction (includes fee in signing data)
 	timestamp := time.Now().Unix()
-	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d", fromAddress, toAddress, amount, timestamp)
+	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d", fromAddress, toAddress, amount, fee, timestamp)
 
 	// Dilithium signs the raw message directly
 	sig := make([]byte, mode3.SignatureSize)
@@ -119,6 +127,7 @@ func cmdSend(args []string) {
 	fmt.Printf("  From:   %s\n", fromAddress)
 	fmt.Printf("  To:     %s\n", toAddress)
 	fmt.Printf("  Amount: %s DLT\n", FormatDLT(amount))
+	fmt.Printf("  Fee:    %s DLT\n", FormatDLT(fee))
 	fmt.Println()
 
 	// Submit to node
@@ -126,6 +135,7 @@ func cmdSend(args []string) {
 		"from":       fromAddress,
 		"to":         toAddress,
 		"amount":     amount,
+		"fee":        fee,
 		"timestamp":  timestamp,
 		"signature":  signatureHex,
 		"public_key": publicKeyHex,
@@ -240,9 +250,12 @@ func cmdSignTransaction(args []string) {
 	pubKeyBytes, _ := pk.MarshalBinary()
 	publicKeyHex := hex.EncodeToString(pubKeyBytes)
 
-	// Create and sign transaction
+	// Default fee for signed transactions
+	var fee int64 = 10000 // 0.0001 DLT
+
+	// Create and sign transaction (includes fee)
 	timestamp := time.Now().Unix()
-	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d", *from, *to, amount, timestamp)
+	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d", *from, *to, amount, fee, timestamp)
 
 	// Dilithium signs the raw message directly
 	sig := make([]byte, mode3.SignatureSize)
@@ -255,6 +268,7 @@ func cmdSignTransaction(args []string) {
 	fmt.Printf("From:      %s\n", *from)
 	fmt.Printf("To:        %s\n", *to)
 	fmt.Printf("Amount:    %s DLT (%d base units)\n", FormatDLT(amount), amount)
+	fmt.Printf("Fee:       %s DLT (%d base units)\n", FormatDLT(fee), fee)
 	fmt.Printf("Timestamp: %d\n", timestamp)
 	fmt.Printf("Signature: %s...\n", signatureHex[:32])
 	fmt.Println("=========================================")
@@ -266,19 +280,20 @@ func cmdSignTransaction(args []string) {
   "from": "%s",
   "to": "%s",
   "amount": %d,
+  "fee": %d,
   "timestamp": %d,
   "signature": "%s",
   "public_key": "%s"
 }
-`, *from, *to, amount, timestamp, signatureHex, publicKeyHex)
+`, *from, *to, amount, fee, timestamp, signatureHex, publicKeyHex)
 	fmt.Println()
 
 	// Show curl command
 	fmt.Println("Submit with curl:")
 	fmt.Printf("curl -X POST http://localhost:8001/transaction \\\n")
 	fmt.Printf("  -H 'Content-Type: application/json' \\\n")
-	fmt.Printf("  -d '{\"from\":\"%s\",\"to\":\"%s\",\"amount\":%d,\"timestamp\":%d,\"signature\":\"%s\",\"public_key\":\"%s\"}'\n",
-		*from, *to, amount, timestamp, signatureHex, publicKeyHex)
+	fmt.Printf("  -d '{\"from\":\"%s\",\"to\":\"%s\",\"amount\":%d,\"fee\":%d,\"timestamp\":%d,\"signature\":\"%s\",\"public_key\":\"%s\"}'\n",
+		*from, *to, amount, fee, timestamp, signatureHex, publicKeyHex)
 }
 
 // loadPrivateKeyFromFile loads a private key from a specific file

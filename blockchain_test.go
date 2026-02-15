@@ -54,7 +54,7 @@ func TestBlockCalculateHash(t *testing.T) {
 func TestVerifyTransactionSignature(t *testing.T) {
 	t.Parallel()
 	w, _ := NewWallet()
-	tx := NewTransaction(w.Address, "recipient", 100)
+	tx := NewTransaction(w.Address, "recipient", 100, 0)
 	tx.Sign(w)
 	if err := VerifyTransactionSignature(tx); err != nil {
 		t.Fatalf("VerifyTransactionSignature failed: %v", err)
@@ -64,7 +64,7 @@ func TestVerifyTransactionSignature(t *testing.T) {
 func TestVerifyTransactionSignatureTampered(t *testing.T) {
 	t.Parallel()
 	w, _ := NewWallet()
-	tx := NewTransaction(w.Address, "recipient", 100)
+	tx := NewTransaction(w.Address, "recipient", 100, 0)
 	tx.Sign(w)
 
 	// Tamper with amount
@@ -213,9 +213,10 @@ func TestMiningIntegration(t *testing.T) {
 		t.Fatalf("miner balance = %d, want %d", minerBalance, 50*DLTUnit)
 	}
 
-	// Create and sign a transaction
+	// Create and sign a transaction (with minimum fee)
 	sendAmount := int64(10 * DLTUnit)
-	tx := NewTransaction(miner.Address, recipient.Address, sendAmount)
+	fee := MinTransactionFee
+	tx := NewTransaction(miner.Address, recipient.Address, sendAmount, fee)
 	if err := tx.Sign(miner); err != nil {
 		t.Fatalf("Sign error: %v", err)
 	}
@@ -227,13 +228,14 @@ func TestMiningIntegration(t *testing.T) {
 	// Mine the block containing the transaction
 	bc.MinePendingTransactions(miner.Address)
 
-	// Check balances: miner got another block reward minus send, recipient got send
+	// Check balances: miner got another block reward + fee minus send minus fee, recipient got send
 	recipientBalance := bc.GetBalance(recipient.Address)
 	if recipientBalance != sendAmount {
 		t.Fatalf("recipient balance = %d, want %d", recipientBalance, sendAmount)
 	}
 
-	minerExpected := 2*50*DLTUnit - sendAmount // two block rewards minus send
+	// Miner: 2 block rewards + fee (collected in coinbase) - sendAmount - fee (paid as sender)
+	minerExpected := 2*50*DLTUnit + fee - sendAmount - fee // fee cancels out since miner pays and collects
 	minerActual := bc.GetBalance(miner.Address)
 	if minerActual != minerExpected {
 		t.Fatalf("miner balance = %d, want %d", minerActual, minerExpected)

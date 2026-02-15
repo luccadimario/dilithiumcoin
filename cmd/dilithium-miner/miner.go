@@ -83,6 +83,7 @@ type Transaction struct {
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Amount    int64  `json:"amount"`
+	Fee       int64  `json:"fee,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
 	PublicKey string `json:"public_key,omitempty"`
@@ -263,6 +264,7 @@ func (m *Miner) getPendingTransactions() []*Transaction {
 			From:      getString(txMap, "from"),
 			To:        getString(txMap, "to"),
 			Amount:    int64(getFloat(txMap, "amount")),
+			Fee:       int64(getFloat(txMap, "fee")),
 			Timestamp: int64(getFloat(txMap, "timestamp")),
 			Signature: getString(txMap, "signature"),
 			PublicKey: getString(txMap, "public_key"),
@@ -286,10 +288,15 @@ func getFloat(m map[string]interface{}, key string) float64 {
 // mineBlock performs proof of work using multiple threads
 func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*Block, bool) {
 	// Build transactions list: coinbase + pending
+	var totalFees int64
+	for _, tx := range pendingTxs {
+		totalFees += tx.Fee
+	}
+
 	coinbase := &Transaction{
 		From:      "SYSTEM",
 		To:        m.address,
-		Amount:    template.Reward,
+		Amount:    template.Reward + totalFees,
 		Timestamp: time.Now().Unix(),
 		Signature: fmt.Sprintf("coinbase-%d-%d", template.Index, time.Now().UnixNano()),
 	}

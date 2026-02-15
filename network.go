@@ -76,7 +76,113 @@ func (n *Node) handleMessage(msg Message, peerAddr string) {
 	}
 }
 
-// handleBlockMessage processes a block from a peer
+// AddBlock validates and accepts a block directly (no JSON round-trip).
+// Called by peer.go handleBlocks and handleBlock for efficient block processing.
+func (n *Node) AddBlock(block *Block, peerAddr string) {
+	n.Blockchain.mutex.Lock()
+
+	if len(n.Blockchain.Blocks) == 0 {
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	lastBlock := n.Blockchain.Blocks[len(n.Blockchain.Blocks)-1]
+
+	// Quick dedup: silently ignore blocks we already have
+	if block.Index <= lastBlock.Index {
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	fmt.Printf("Received block #%d from %s\n", block.Index, peerAddr)
+
+	// Check if block connects to our chain
+	if block.PreviousHash != lastBlock.Hash {
+		fmt.Printf("Block #%d doesn't connect - requesting full chain sync\n", block.Index)
+		if n.PeerManager != nil {
+			n.Blockchain.mutex.Unlock()
+			peer := n.PeerManager.GetPeerByAddr(peerAddr)
+			if peer != nil {
+				n.PeerManager.requestChainSync(peer)
+			}
+			return
+		}
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Validate block difficulty matches chain rules
+	expectedBits := n.Blockchain.GetCurrentDifficultyBitsLocked()
+	expectedHex := difficultyBitsToHexDigits(expectedBits)
+
+	if !meetsDifficultyBits(block.Hash, expectedBits) {
+		fmt.Printf("Block #%d does not meet difficulty target (%d bits required)\n", block.Index, expectedBits)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	if block.DifficultyBits > 0 {
+		if block.DifficultyBits != expectedBits {
+			fmt.Printf("Block #%d has wrong difficulty bits %d (expected %d)\n", block.Index, block.DifficultyBits, expectedBits)
+			n.Blockchain.mutex.Unlock()
+			return
+		}
+	} else {
+		if block.Difficulty != expectedHex {
+			fmt.Printf("Block #%d has wrong difficulty %d (expected %d)\n", block.Index, block.Difficulty, expectedHex)
+			n.Blockchain.mutex.Unlock()
+			return
+		}
+	}
+
+	// Validate block timestamp
+	now := time.Now().Unix()
+	if block.Timestamp > now+2*60*60 {
+		fmt.Printf("Block #%d timestamp too far in the future\n", block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+	if block.Timestamp < lastBlock.Timestamp {
+		fmt.Printf("Block #%d timestamp before previous block\n", block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Verify hash is correct
+	if block.Hash != block.CalculateHash() {
+		fmt.Printf("Block #%d has invalid hash\n", block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Validate all transactions in the block
+	if err := n.Blockchain.ValidateBlockTransactions(block, n.Blockchain.Blocks); err != nil {
+		fmt.Printf("Block #%d has invalid transactions: %v\n", block.Index, err)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
+
+	// Cancel our current mining - someone else won this round
+	n.cancelMining()
+
+	// Add block to chain
+	n.Blockchain.Blocks = append(n.Blockchain.Blocks, block)
+	n.Blockchain.persistBlock(block)
+
+	// Remove mined transactions from our mempool
+	n.Blockchain.clearMinedTransactions(block.Transactions)
+
+	n.Blockchain.mutex.Unlock()
+
+	fmt.Printf("Block #%d added to chain (from peer)\n", block.Index)
+
+	// Restart mining if auto-mining is enabled and there are pending transactions
+	if n.autoMineEnabled && n.Blockchain.GetPendingCount() > 0 {
+		go n.startMiningRound()
+	}
+}
+
+// handleBlockMessage processes a block from a peer (legacy path via Message)
 func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 	var block Block
 	blockJSON, _ := json.Marshal(msg.Data)

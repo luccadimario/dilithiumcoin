@@ -317,9 +317,12 @@ func (api *apiService) sendTransaction(ws *walletService, to string, amountDLT s
 	pubKeyBytes, _ := pk.MarshalBinary()
 	publicKeyHex := hex.EncodeToString(pubKeyBytes)
 
-	// Create and sign transaction
+	// Default fee: 0.0001 DLT = 10000 base units
+	var fee int64 = 10000
+
+	// Create and sign transaction (includes fee in signing data)
 	timestamp := time.Now().Unix()
-	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d", fromAddress, to, amount, timestamp)
+	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d", fromAddress, to, amount, fee, timestamp)
 
 	sig := make([]byte, mode3.SignatureSize)
 	mode3.SignTo(ws.privateKey, []byte(txData), sig)
@@ -330,6 +333,7 @@ func (api *apiService) sendTransaction(ws *walletService, to string, amountDLT s
 		"from":       fromAddress,
 		"to":         to,
 		"amount":     amount,
+		"fee":        fee,
 		"timestamp":  timestamp,
 		"signature":  signatureHex,
 		"public_key": publicKeyHex,

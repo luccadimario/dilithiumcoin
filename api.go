@@ -226,11 +226,12 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 				"active":   isMining,
 				"address":  minerAddr,
 			},
-			"difficulty":       n.Blockchain.GetCurrentDifficulty(),
-			"difficulty_bits":  n.Blockchain.GetCurrentDifficultyBits(),
-			"last_block_hash":  n.Blockchain.GetLastBlock().Hash,
-			"valid":            n.Blockchain.IsValid(),
-			"uptime":           time.Now().Unix(),
+			"difficulty":            n.Blockchain.GetCurrentDifficulty(),
+			"difficulty_bits":       n.Blockchain.GetCurrentDifficultyBits(),
+			"last_block_hash":       n.Blockchain.GetLastBlock().Hash,
+			"min_transaction_fee":   MinTransactionFee,
+			"valid":                 n.Blockchain.IsValid(),
+			"uptime":                time.Now().Unix(),
 		},
 	})
 }
@@ -549,6 +550,7 @@ func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
 		From      string `json:"from"`
 		To        string `json:"to"`
 		Amount    int64  `json:"amount"`
+		Fee       int64  `json:"fee"`
 		Timestamp int64  `json:"timestamp"`
 		Signature string `json:"signature"`
 		PublicKey string `json:"public_key"`
@@ -563,6 +565,7 @@ func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
 		From:      req.From,
 		To:        req.To,
 		Amount:    req.Amount,
+		Fee:       req.Fee,
 		Timestamp: req.Timestamp,
 		Signature: req.Signature,
 		PublicKey:  req.PublicKey,
@@ -607,6 +610,8 @@ func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
 			"to":         tx.To,
 			"amount":     tx.Amount,
 			"amount_dlt": FormatDLT(tx.Amount),
+			"fee":        tx.Fee,
+			"fee_dlt":    FormatDLT(tx.Fee),
 			"timestamp":  tx.Timestamp,
 			"signature":  truncateString(tx.Signature, 32),
 		},

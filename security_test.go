@@ -186,8 +186,8 @@ func TestGetAddressInfo(t *testing.T) {
 	// Mine to get funds
 	bc.MinePendingTransactions(miner.Address)
 
-	// Send some
-	tx := NewTransaction(miner.Address, recipient.Address, 10*DLTUnit)
+	// Send some (with minimum fee)
+	tx := NewTransaction(miner.Address, recipient.Address, 10*DLTUnit, MinTransactionFee)
 	tx.Sign(miner)
 	bc.AddTransaction(tx)
 	bc.MinePendingTransactions(miner.Address)
@@ -214,7 +214,7 @@ func TestGetAddressInfo(t *testing.T) {
 func TestTransactionChainID(t *testing.T) {
 	t.Parallel()
 	w, _ := NewWallet()
-	tx := NewTransaction(w.Address, "recipient", 100)
+	tx := NewTransaction(w.Address, "recipient", 100, 0)
 	tx.Sign(w)
 
 	// Should verify with chain ID
@@ -226,14 +226,14 @@ func TestTransactionChainID(t *testing.T) {
 func TestTransactionSignatureNotEmpty(t *testing.T) {
 	t.Parallel()
 	w, _ := NewWallet()
-	tx := NewTransaction(w.Address, "recipient", 100)
+	tx := NewTransaction(w.Address, "recipient", 100, 0)
 	tx.Sign(w)
 
 	if !tx.HasSignature() {
 		t.Fatal("HasSignature() should return true after signing")
 	}
 
-	tx2 := NewTransaction(w.Address, "recipient", 100)
+	tx2 := NewTransaction(w.Address, "recipient", 100, 0)
 	if tx2.HasSignature() {
 		t.Fatal("HasSignature() should return false before signing")
 	}

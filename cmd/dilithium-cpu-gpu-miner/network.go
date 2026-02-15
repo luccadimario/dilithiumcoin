@@ -38,6 +38,7 @@ type Transaction struct {
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Amount    int64  `json:"amount"`
+	Fee       int64  `json:"fee,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
 	PublicKey string `json:"public_key,omitempty"`
@@ -258,6 +259,7 @@ func (c *NodeClient) GetPendingTransactions() []*Transaction {
 			From:      getStr(txMap, "from"),
 			To:        getStr(txMap, "to"),
 			Amount:    int64(getNum(txMap, "amount")),
+			Fee:       int64(getNum(txMap, "fee")),
 			Timestamp: int64(getNum(txMap, "timestamp")),
 			Signature: getStr(txMap, "signature"),
 			PublicKey: getStr(txMap, "public_key"),

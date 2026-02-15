@@ -17,7 +17,7 @@ use std::time::Instant;
 #[command(
     name = "dilithium-gpu-miner",
     about = "Dilithium GPU Miner - Rust+GPU Implementation (CUDA/Metal)",
-    version = "1.0.0"
+    version = "4.0.0"
 )]
 struct Args {
     /// Wallet address to mine to

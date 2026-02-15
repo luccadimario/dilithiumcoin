@@ -64,7 +64,7 @@ func TestParseDLTInvalid(t *testing.T) {
 
 func TestNewTransaction(t *testing.T) {
 	t.Parallel()
-	tx := NewTransaction("addr_from", "addr_to", 500)
+	tx := NewTransaction("addr_from", "addr_to", 500, 0)
 	if tx.From != "addr_from" {
 		t.Errorf("From = %q, want %q", tx.From, "addr_from")
 	}
@@ -85,7 +85,7 @@ func TestNewTransaction(t *testing.T) {
 func TestTransactionSign(t *testing.T) {
 	t.Parallel()
 	w, _ := NewWallet()
-	tx := NewTransaction(w.Address, "recipient", 100)
+	tx := NewTransaction(w.Address, "recipient", 100, 0)
 	if err := tx.Sign(w); err != nil {
 		t.Fatalf("Sign() error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestTransactionSign(t *testing.T) {
 func TestTransactionToJSON(t *testing.T) {
 	t.Parallel()
 	w, _ := NewWallet()
-	tx := NewTransaction(w.Address, "recipient", 42)
+	tx := NewTransaction(w.Address, "recipient", 42, 0)
 	tx.Sign(w)
 
 	jsonStr := tx.ToJSON()
@@ -128,7 +128,7 @@ func TestTransactionToJSON(t *testing.T) {
 func TestTransactionSignVerifyRoundtrip(t *testing.T) {
 	t.Parallel()
 	w, _ := NewWallet()
-	tx := NewTransaction(w.Address, "recipient", 1000)
+	tx := NewTransaction(w.Address, "recipient", 1000, 0)
 	if err := tx.Sign(w); err != nil {
 		t.Fatalf("Sign() error: %v", err)
 	}

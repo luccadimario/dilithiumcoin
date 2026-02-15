@@ -252,10 +252,16 @@ func (m *Miner) miningLoop() {
 
 // constructBlock builds a block with coinbase + pending transactions, ready for mining.
 func (m *Miner) constructBlock(template *BlockTemplate, pendingTxs []*Transaction) *Block {
+	// Sum fees from pending transactions
+	var totalFees int64
+	for _, tx := range pendingTxs {
+		totalFees += tx.Fee
+	}
+
 	coinbase := &Transaction{
 		From:      "SYSTEM",
 		To:        m.address,
-		Amount:    template.Reward,
+		Amount:    template.Reward + totalFees,
 		Timestamp: time.Now().Unix(),
 		Signature: fmt.Sprintf("coinbase-%d-%d", template.Index, time.Now().UnixNano()),
 	}
