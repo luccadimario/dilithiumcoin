@@ -258,6 +258,7 @@ impl Miner {
                     .unwrap()
                     .as_nanos()
             ),
+            public_key: String::new(),
         };
 
         let mut txs = vec![coinbase];
