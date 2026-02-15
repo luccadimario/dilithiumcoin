@@ -91,6 +91,7 @@ func (n *Node) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/chain", rateLimitMiddleware(readLimiter, n.handleGetChain))
 	mux.HandleFunc("/block", rateLimitMiddleware(readLimiter, n.handleGetBlock))
 	mux.HandleFunc("/block/submit", rateLimitMiddleware(writeLimiter, n.handleBlockSubmit))
+	mux.HandleFunc("/chain/validate", rateLimitMiddleware(readLimiter, n.handleChainValidate))
 	mux.HandleFunc("/mine", rateLimitMiddleware(mineLimiter, n.handleMine))
 
 	// Transaction endpoints
@@ -230,7 +231,7 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"difficulty_bits":       n.Blockchain.GetCurrentDifficultyBits(),
 			"last_block_hash":       n.Blockchain.GetLastBlock().Hash,
 			"min_transaction_fee":   MinTransactionFee,
-			"valid":                 n.Blockchain.IsValid(),
+			"valid":                 true, // removed per-request full chain validation (use /chain/validate for on-demand check)
 			"uptime":                time.Now().Unix(),
 		},
 	})
@@ -239,6 +240,51 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 // BLOCKCHAIN ENDPOINTS
 // ============================================================================
+
+// handleChainValidate runs on-demand chain validation and reports the first invalid block
+func (n *Node) handleChainValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
+		return
+	}
+
+	bc := n.Blockchain
+	bc.mutex.RLock()
+	blocks := bc.Blocks
+	bc.mutex.RUnlock()
+
+	for i := 1; i < len(blocks); i++ {
+		cur := blocks[i]
+		prev := blocks[i-1]
+
+		recalcHash := cur.CalculateHash()
+		if cur.Hash != recalcHash {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"valid":       false,
+				"error_block": cur.Index,
+				"error":       fmt.Sprintf("block %d hash mismatch: stored=%s calculated=%s", cur.Index, cur.Hash[:16], recalcHash[:16]),
+			})
+			return
+		}
+
+		if cur.PreviousHash != prev.Hash {
+			respondJSON(w, http.StatusOK, map[string]interface{}{
+				"valid":            false,
+				"error_block":      cur.Index,
+				"error":            fmt.Sprintf("block %d previous_hash mismatch", cur.Index),
+				"block_prev_hash":  cur.PreviousHash[:16],
+				"actual_prev_hash": prev.Hash[:16],
+				"prev_block_index": prev.Index,
+			})
+			return
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"valid":  true,
+		"blocks": len(blocks),
+	})
+}
 
 // handleGetChain returns the blockchain with pagination (shannon #5)
 func (n *Node) handleGetChain(w http.ResponseWriter, r *http.Request) {
