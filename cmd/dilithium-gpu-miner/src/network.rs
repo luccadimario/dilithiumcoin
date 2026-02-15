@@ -11,7 +11,7 @@ pub struct Transaction {
     pub amount: i64,
     pub timestamp: i64,
     pub signature: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub public_key: String,
 }
 
