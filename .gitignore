@@ -28,3 +28,6 @@ Thumbs.db
 cmd/dilithium-wallet/build/bin/
 cmd/dilithium-wallet/frontend/node_modules/
 cmd/dilithium-wallet/frontend/dist/
+release-v4.0.1/
+dilithium-linux-*
+dilithium-wallet

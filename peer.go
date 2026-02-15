@@ -122,6 +122,9 @@ type Peer struct {
 	msgWindowStart time.Time
 	msgWindowCount int
 
+	// Sync state — prevents duplicate sync requests to same peer
+	syncInProgress bool
+
 	// State management
 	mutex         sync.RWMutex
 	sendCh        chan *P2PMessage
@@ -403,8 +406,6 @@ type PeerManager struct {
 	started     bool
 	stopCh      chan struct{}
 	syncActive  int32 // atomic: 1 if sync in progress, 0 otherwise
-	lastSyncReq time.Time
-	syncMu      sync.Mutex
 }
 
 // NewPeerManager creates a new peer manager
@@ -747,18 +748,24 @@ func (pm *PeerManager) handleMessage(peer *Peer, msg *P2PMessage) {
 		var ping PingMsg
 		if err := msg.Decode(&ping); err == nil {
 			peer.SendMessage(MsgTypePong, NewPongMsg(ping.Nonce))
+		} else {
+			fmt.Printf("Error decoding ping from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypePong:
 		var pong PongMsg
 		if err := msg.Decode(&pong); err == nil {
 			peer.handlePong(pong.Nonce)
+		} else {
+			fmt.Printf("Error decoding pong from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeAddr:
 		var addr AddrMsg
 		if err := msg.Decode(&addr); err == nil {
 			pm.handleAddr(peer, &addr)
+		} else {
+			fmt.Printf("Error decoding addr from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeGetAddr:
@@ -769,24 +776,32 @@ func (pm *PeerManager) handleMessage(peer *Peer, msg *P2PMessage) {
 		var inv InvMsg
 		if err := msg.Decode(&inv); err == nil {
 			pm.handleInv(peer, &inv)
+		} else {
+			fmt.Printf("Error decoding inv from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeGetData:
 		var getData GetDataMsg
 		if err := msg.Decode(&getData); err == nil {
 			pm.handleGetData(peer, &getData)
+		} else {
+			fmt.Printf("Error decoding getdata from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeTx:
 		var tx TxMsg
 		if err := msg.Decode(&tx); err == nil {
 			pm.handleTx(peer, &tx)
+		} else {
+			fmt.Printf("Error decoding tx from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeBlock:
 		var block BlockMsg
 		if err := msg.Decode(&block); err == nil {
 			pm.handleBlock(peer, &block)
+		} else {
+			fmt.Printf("Error decoding block from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeMempool:
@@ -796,6 +811,8 @@ func (pm *PeerManager) handleMessage(peer *Peer, msg *P2PMessage) {
 		var reject RejectMsg
 		if err := msg.Decode(&reject); err == nil {
 			fmt.Printf("Peer %s rejected %s: %s (%s)\n", peer.Addr, reject.Message, reject.Reason, reject.Code)
+		} else {
+			fmt.Printf("Error decoding reject from %s: %v\n", peer.Addr, err)
 		}
 
 	// Protocol v2: incremental sync
@@ -803,24 +820,32 @@ func (pm *PeerManager) handleMessage(peer *Peer, msg *P2PMessage) {
 		var gh GetHeadersMsg
 		if err := msg.Decode(&gh); err == nil {
 			pm.handleGetHeaders(peer, &gh)
+		} else {
+			fmt.Printf("Error decoding getheaders from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeHeaders:
 		var h HeadersMsg
 		if err := msg.Decode(&h); err == nil {
 			pm.handleHeaders(peer, &h)
+		} else {
+			fmt.Printf("Error decoding headers from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeGetBlocks:
 		var gb GetBlocksMsg
 		if err := msg.Decode(&gb); err == nil {
 			pm.handleGetBlocks(peer, &gb)
+		} else {
+			fmt.Printf("Error decoding getblocks from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeBlocks:
 		var b BlocksMsg
 		if err := msg.Decode(&b); err == nil {
 			pm.handleBlocks(peer, &b)
+		} else {
+			fmt.Printf("Error decoding blocks from %s: %v\n", peer.Addr, err)
 		}
 
 	// Protocol v2: census
@@ -828,6 +853,8 @@ func (pm *PeerManager) handleMessage(peer *Peer, msg *P2PMessage) {
 		var ann NodeAnnounceMsg
 		if err := msg.Decode(&ann); err == nil {
 			pm.handleNodeAnnounce(peer, &ann)
+		} else {
+			fmt.Printf("Error decoding nodeannounce from %s: %v\n", peer.Addr, err)
 		}
 
 	case MsgTypeGetNodeAnnounce:
@@ -950,15 +977,15 @@ func (pm *PeerManager) handleMempool(peer *Peer) {
 // ============================================================================
 
 // startIncrementalSync begins syncing by requesting headers from our tip.
-// Debounced to prevent request spam that triggers peer rate-limiting.
+// Deduplicates: only one sync in flight per peer at a time.
 func (pm *PeerManager) startIncrementalSync(peer *Peer) {
-	pm.syncMu.Lock()
-	if time.Since(pm.lastSyncReq) < 3*time.Second {
-		pm.syncMu.Unlock()
-		return // Too soon since last sync request
+	peer.mutex.Lock()
+	if peer.syncInProgress {
+		peer.mutex.Unlock()
+		return
 	}
-	pm.lastSyncReq = time.Now()
-	pm.syncMu.Unlock()
+	peer.syncInProgress = true
+	peer.mutex.Unlock()
 
 	ourHeight := pm.node.Blockchain.GetBlockCount()
 	// Request headers from our height onwards (let the peer decide the upper bound)
@@ -1016,7 +1043,11 @@ func (pm *PeerManager) handleHeaders(peer *Peer, msg *HeadersMsg) {
 	}
 
 	if needStart < 0 {
-		return // Nothing new
+		// No new blocks — sync done, clear flag
+		peer.mutex.Lock()
+		peer.syncInProgress = false
+		peer.mutex.Unlock()
+		return
 	}
 
 	// Only request blocks that connect to our chain tip
@@ -1066,13 +1097,27 @@ func (pm *PeerManager) handleGetBlocks(peer *Peer, msg *GetBlocksMsg) {
 }
 
 // handleBlocks processes received blocks and requests more if needed.
+// Validates and inserts blocks directly instead of delegating to handleBlockMessage,
+// which avoids triggering requestChainSync per failed block (sync amplification).
 func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 	if len(msg.Blocks) == 0 {
+		// Empty response — sync done, clear flag
+		peer.mutex.Lock()
+		peer.syncInProgress = false
+		peer.mutex.Unlock()
 		return
 	}
 
 	fmt.Printf("Received %d blocks from %s (range %d-%d)\n",
 		len(msg.Blocks), peer.Addr, msg.Blocks[0].Index, msg.Blocks[len(msg.Blocks)-1].Index)
+
+	bc := pm.node.Blockchain
+	bc.mutex.Lock()
+
+	if len(bc.Blocks) == 0 {
+		bc.mutex.Unlock()
+		return
+	}
 
 	added := 0
 	for _, block := range msg.Blocks {
@@ -1080,18 +1125,87 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 			continue
 		}
 
-		pm.node.AddBlock(block, peer.Addr)
+		lastBlock := bc.Blocks[len(bc.Blocks)-1]
+
+		// Skip blocks we already have
+		if block.Index <= lastBlock.Index {
+			continue
+		}
+
+		// Block must connect to our chain tip
+		if block.PreviousHash != lastBlock.Hash {
+			fmt.Printf("Batch block #%d doesn't connect (expected prev %s, got %s) - stopping batch\n",
+				block.Index, lastBlock.Hash[:16], block.PreviousHash[:16])
+			break
+		}
+
+		// Validate difficulty
+		expectedBits := bc.GetCurrentDifficultyBitsLocked()
+		if !meetsDifficultyBits(block.Hash, expectedBits) {
+			fmt.Printf("Batch block #%d does not meet difficulty target (%d bits) - stopping batch\n", block.Index, expectedBits)
+			break
+		}
+		if block.DifficultyBits > 0 {
+			if block.DifficultyBits != expectedBits {
+				fmt.Printf("Batch block #%d has wrong difficulty bits %d (expected %d) - stopping batch\n", block.Index, block.DifficultyBits, expectedBits)
+				break
+			}
+		} else {
+			expectedHex := difficultyBitsToHexDigits(expectedBits)
+			if block.Difficulty != expectedHex {
+				fmt.Printf("Batch block #%d has wrong difficulty %d (expected %d) - stopping batch\n", block.Index, block.Difficulty, expectedHex)
+				break
+			}
+		}
+
+		// Validate timestamp
+		now := time.Now().Unix()
+		if block.Timestamp > now+2*60*60 {
+			fmt.Printf("Batch block #%d timestamp too far in future - stopping batch\n", block.Index)
+			break
+		}
+		if block.Timestamp < lastBlock.Timestamp {
+			fmt.Printf("Batch block #%d timestamp before previous block - stopping batch\n", block.Index)
+			break
+		}
+
+		// Verify hash
+		if block.Hash != block.CalculateHash() {
+			fmt.Printf("Batch block #%d has invalid hash - stopping batch\n", block.Index)
+			break
+		}
+
+		// Validate transactions
+		if err := bc.ValidateBlockTransactions(block, bc.Blocks); err != nil {
+			fmt.Printf("Batch block #%d has invalid transactions: %v - stopping batch\n", block.Index, err)
+			break
+		}
+
+		if err := bc.AppendBlock(block); err != nil {
+			fmt.Printf("ERROR: %v — stopping batch\n", err)
+			break
+		}
 		added++
 	}
+
+	bc.mutex.Unlock()
+
+	if added > 0 {
+		fmt.Printf("Added %d blocks from batch (chain height: %d)\n", added, bc.GetBlockCount())
+	}
+
+	// Clear sync flag so next round can proceed
+	peer.mutex.Lock()
+	peer.syncInProgress = false
+	peer.mutex.Unlock()
 
 	// Check if we need more blocks from this peer
 	peer.mutex.RLock()
 	peerHeight := peer.StartHeight
 	peer.mutex.RUnlock()
 
-	ourHeight := pm.node.Blockchain.GetBlockCount()
+	ourHeight := bc.GetBlockCount()
 	if ourHeight < peerHeight {
-		// Request next batch
 		fmt.Printf("Need more blocks from %s (our: %d, peer: %d)\n", peer.Addr, ourHeight, peerHeight)
 		pm.startIncrementalSync(peer)
 	} else if added > 0 {

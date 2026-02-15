@@ -279,12 +279,11 @@ func (n *Node) handleBlockMessage(msg Message, peerAddr string) {
 	// Cancel our current mining - someone else won this round
 	n.cancelMining()
 
-	// Add block to chain
-	n.Blockchain.Blocks = append(n.Blockchain.Blocks, &block)
-	n.Blockchain.persistBlock(&block)
-
-	// Remove mined transactions from our mempool
-	n.Blockchain.clearMinedTransactions(block.Transactions)
+	if err := n.Blockchain.AppendBlock(&block); err != nil {
+		fmt.Printf("ERROR: %v — block #%d from peer discarded\n", err, block.Index)
+		n.Blockchain.mutex.Unlock()
+		return
+	}
 
 	n.Blockchain.mutex.Unlock()
 

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var AppVersion = "4.0.0"
+var AppVersion = "4.0.1"
 
 const banner = `
   ██████╗ ██╗██╗     ██╗████████╗██╗  ██╗██╗██╗   ██╗███╗   ███╗

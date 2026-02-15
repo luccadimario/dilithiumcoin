@@ -158,9 +158,16 @@ func (s *ChainStore) LoadChain() ([]*Block, error) {
 		blocks = append(blocks, &block)
 	}
 
-	if len(blocks) < len(files) {
-		fmt.Printf("[!] Loaded %d of %d block files (stopped at first gap). Peer sync will recover missing blocks.\n",
-			len(blocks), len(files))
+	// Verify block contiguity: each block's Index must match its position
+	totalLoaded := len(blocks)
+	for i, block := range blocks {
+		if block.Index != int64(i) {
+			discarded := totalLoaded - i
+			fmt.Printf("WARNING: Loaded %d blocks from disk (truncated at gap: block %d missing, %d blocks after gap discarded)\n",
+				i, i, discarded)
+			blocks = blocks[:i]
+			break
+		}
 	}
 
 	return blocks, nil

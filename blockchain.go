@@ -222,13 +222,29 @@ func (bc *Blockchain) SetStore(store *ChainStore) error {
 }
 
 // persistBlock saves a single block to disk (if store is set).
-func (bc *Blockchain) persistBlock(block *Block) {
+// Returns an error if the block could not be written — callers MUST NOT
+// add the block to the in-memory chain if this returns non-nil.
+func (bc *Blockchain) persistBlock(block *Block) error {
 	if bc.store == nil {
-		return
+		return nil
 	}
 	if err := bc.store.SaveBlock(block); err != nil {
-		fmt.Printf("WARNING: Failed to persist block %d: %v\n", block.Index, err)
+		return fmt.Errorf("failed to persist block %d: %w", block.Index, err)
 	}
+	return nil
+}
+
+// AppendBlock persists a block to disk and then adds it to the in-memory chain.
+// This is the ONLY correct way to add a block — it guarantees disk-before-memory
+// ordering so blocks can never exist in memory without being on disk.
+// Caller MUST hold bc.mutex.
+func (bc *Blockchain) AppendBlock(block *Block) error {
+	if err := bc.persistBlock(block); err != nil {
+		return err
+	}
+	bc.Blocks = append(bc.Blocks, block)
+	bc.clearMinedTransactions(block.Transactions)
+	return nil
 }
 
 // persistChainFrom saves all blocks from startIndex onward and prunes orphans.
@@ -362,11 +378,10 @@ func (bc *Blockchain) MinePendingTransactionsWithCancel(minerAddress string, can
 		return nil, false
 	}
 
-	bc.Blocks = append(bc.Blocks, newBlock)
-	bc.persistBlock(newBlock)
-
-	// Clear mined transactions from mempool
-	bc.clearMinedTransactions(newBlock.Transactions)
+	if err := bc.AppendBlock(newBlock); err != nil {
+		fmt.Printf("ERROR: %v — block %d discarded\n", err, newBlock.Index)
+		return nil, false
+	}
 
 	return newBlock, true
 }

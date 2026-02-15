@@ -479,9 +479,11 @@ func (n *Node) handleBlockSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add block to chain
-	n.Blockchain.Blocks = append(n.Blockchain.Blocks, &block)
-	n.Blockchain.clearMinedTransactions(block.Transactions)
+	if err := n.Blockchain.AppendBlock(&block); err != nil {
+		n.Blockchain.mutex.Unlock()
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to persist block: %v", err))
+		return
+	}
 	n.Blockchain.mutex.Unlock()
 
 	// Broadcast to peers
