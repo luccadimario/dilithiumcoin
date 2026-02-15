@@ -78,9 +78,9 @@ func corsMiddleware(next http.Handler) http.Handler {
 // registerRoutes registers all API endpoints
 func (n *Node) registerRoutes(mux *http.ServeMux) {
 	// Rate limiters for different endpoint categories
-	writeLimiter := NewRateLimiter(30, time.Minute)   // 30 req/min for state-changing ops
-	mineLimiter := NewRateLimiter(10, time.Minute)     // 10 req/min for mining
-	readLimiter := NewRateLimiter(120, time.Minute)    // 120 req/min for reads
+	writeLimiter := NewRateLimiter(120, time.Minute)   // 120 req/min for state-changing ops
+	mineLimiter := NewRateLimiter(60, time.Minute)     // 60 req/min for mining
+	readLimiter := NewRateLimiter(600, time.Minute)    // 600 req/min for reads
 
 	// Node info (read-limited)
 	mux.HandleFunc("/", rateLimitMiddleware(readLimiter, n.handleRoot))

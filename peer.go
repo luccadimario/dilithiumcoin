@@ -237,21 +237,26 @@ func (p *Peer) readLoop() {
 		p.MsgsRecv++
 
 		// P2P message rate limiting (shannon #9)
-		// Allow 100 messages per 10 seconds per peer
+		// Allow 500 messages per 10 seconds per peer (syncs are bursty)
 		if now.Sub(p.msgWindowStart) > 10*time.Second {
 			p.msgWindowStart = now
 			p.msgWindowCount = 1
 		} else {
 			p.msgWindowCount++
 		}
-		rateLimited := p.msgWindowCount > 100
+		rateLimited := p.msgWindowCount > 500
 		p.mutex.Unlock()
 
 		if rateLimited {
-			host, _, _ := net.SplitHostPort(p.Addr)
-			p.manager.Ban(host, "P2P message rate limit exceeded")
-			fmt.Printf("Banned peer %s: message rate limit exceeded\n", p.Addr)
-			return
+			fmt.Printf("Warning: peer %s exceeding message rate (%d msgs in window)\n", p.Addr, p.msgWindowCount)
+			// Only ban at 2x the limit (1000+ msgs) - likely abuse
+			if p.msgWindowCount > 1000 {
+				host, _, _ := net.SplitHostPort(p.Addr)
+				p.manager.Ban(host, "P2P message rate limit exceeded")
+				fmt.Printf("Banned peer %s: message rate limit exceeded\n", p.Addr)
+				return
+			}
+			continue // drop the message but don't ban
 		}
 
 		p.manager.handleMessage(p, msg)
