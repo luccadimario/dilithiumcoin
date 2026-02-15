@@ -69,6 +69,12 @@ type NetworkConfig struct {
 	// Banning
 	BanDuration      time.Duration // Default ban duration
 	BanThreshold     int           // Misbehavior score threshold for ban
+
+	// Protocol v2: gossip and census
+	AddrTTL        time.Duration // Max age for gossiped addresses (default 4h)
+	GossipInterval time.Duration // Active addr gossip interval (default 10min)
+	CensusEnabled  bool          // Enable network census (default true)
+	DNSSeeds       []string      // DNS seed hostnames (stub for future)
 }
 
 // DefaultNetworkConfig returns the default network configuration
@@ -80,6 +86,11 @@ func DefaultNetworkConfig() *NetworkConfig {
 			"seed.dilithiumcoin.com:1701",
 			"seed1.dilithiumcoin.com:1701",
 			"seed2.dilithiumcoin.com:1701",
+			"seed3.dilithiumcoin.com:1701",
+			"seed4.dilithiumcoin.com:1701",
+			"seed5.dilithiumcoin.com:1701",
+			"node1.dilithiumcoin.com:1701",
+			"node2.dilithiumcoin.com:1701",
 		},
 
 		// Connection limits
@@ -110,6 +121,12 @@ func DefaultNetworkConfig() *NetworkConfig {
 		// Banning
 		BanDuration:  24 * time.Hour,
 		BanThreshold: 100,
+
+		// Protocol v2
+		AddrTTL:        4 * time.Hour,
+		GossipInterval: 10 * time.Minute,
+		CensusEnabled:  true,
+		DNSSeeds:       []string{"_dilt._tcp.seeds.dilithiumcoin.com"},
 	}
 }
 

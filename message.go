@@ -15,7 +15,7 @@ import (
 
 const (
 	// ProtocolVersion is the current P2P protocol version
-	ProtocolVersion uint32 = 1
+	ProtocolVersion uint32 = 2
 
 	// MagicBytes identifies Dilithium network messages
 	MagicBytes uint32 = 0x44494C54 // "DILT" in hex
@@ -57,9 +57,13 @@ const (
 	MsgTypePong       MsgType = "pong"
 	MsgTypeReject     MsgType = "reject"
 
-	// Legacy message types for backwards compatibility
-	MsgTypeChain       MsgType = "chain"
-	MsgTypeTransaction MsgType = "transaction"
+	// Protocol v2 message types
+	MsgTypeGetHeaders      MsgType = "getheaders"
+	MsgTypeHeaders         MsgType = "headers"
+	MsgTypeGetBlocks       MsgType = "getblocks"
+	MsgTypeBlocks          MsgType = "blocks"
+	MsgTypeNodeAnnounce    MsgType = "nodeannounce"
+	MsgTypeGetNodeAnnounce MsgType = "getnodeannounce"
 )
 
 // ============================================================================
@@ -160,6 +164,8 @@ type NetAddr struct {
 	Services  ServiceFlag `json:"services"`  // Services this node offers
 	IP        string      `json:"ip"`        // IP address
 	Port      uint16      `json:"port"`      // Port number
+	TTL       int64       `json:"ttl,omitempty"`     // Time-to-live for gossip forwarding
+	NodeID    string      `json:"node_id,omitempty"` // Unique node identifier
 }
 
 // NewNetAddr creates a new network address
@@ -522,7 +528,8 @@ func (t MsgType) IsDataMsg() bool {
 
 // IsRequestMsg returns true if this message requests data from peers
 func (t MsgType) IsRequestMsg() bool {
-	return t == MsgTypeGetAddr || t == MsgTypeGetData || t == MsgTypeMempool
+	return t == MsgTypeGetAddr || t == MsgTypeGetData || t == MsgTypeMempool ||
+		t == MsgTypeGetHeaders || t == MsgTypeGetBlocks || t == MsgTypeGetNodeAnnounce
 }
 
 // RequiresHandshake returns true if this message requires completed handshake
@@ -531,47 +538,82 @@ func (t MsgType) RequiresHandshake() bool {
 }
 
 // ============================================================================
-// LEGACY MESSAGE CONVERSION
+// PROTOCOL V2 MESSAGE TYPES
 // ============================================================================
 
-// LegacyMessage represents the old message format for backwards compatibility
-type LegacyMessage struct {
-	Type      string      `json:"type"`
-	Data      interface{} `json:"data"`
-	Timestamp int64       `json:"timestamp"`
+// BlockHeader is a Block without Transactions (for lightweight sync)
+type BlockHeader struct {
+	Index          int64  `json:"Index"`
+	Timestamp      int64  `json:"Timestamp"`
+	PreviousHash   string `json:"PreviousHash"`
+	Hash           string `json:"Hash"`
+	Nonce          int64  `json:"Nonce"`
+	Difficulty     int    `json:"Difficulty"`
+	DifficultyBits int    `json:"DifficultyBits,omitempty"`
+	TxCount        int    `json:"tx_count"` // Number of transactions (metadata only)
 }
 
-// ToP2PMessage converts a legacy message to the new format
-func (m *LegacyMessage) ToP2PMessage() (*P2PMessage, error) {
-	var msgType MsgType
-	switch m.Type {
-	case "block":
-		msgType = MsgTypeBlock
-	case "transaction":
-		msgType = MsgTypeTx
-	case "chain":
-		msgType = MsgTypeChain
-	default:
-		msgType = MsgType(m.Type)
-	}
-
-	return NewP2PMessage(msgType, m.Data)
+// GetHeadersMsg requests block headers for a height range
+type GetHeadersMsg struct {
+	StartHeight int64 `json:"start_height"`
+	StopHeight  int64 `json:"stop_height"`
 }
 
-// FromP2PMessage converts a P2P message to legacy format
-func FromP2PMessage(msg *P2PMessage) *LegacyMessage {
-	var data interface{}
-	json.Unmarshal(msg.Payload, &data)
+// NewGetHeadersMsg creates a new get headers request
+func NewGetHeadersMsg(start, stop int64) *GetHeadersMsg {
+	return &GetHeadersMsg{StartHeight: start, StopHeight: stop}
+}
 
-	legacyType := string(msg.Type)
-	// Convert new types to legacy equivalents
-	if msg.Type == MsgTypeTx {
-		legacyType = "transaction"
-	}
+// HeadersMsg responds with block headers
+type HeadersMsg struct {
+	Headers []*BlockHeader `json:"headers"`
+}
 
-	return &LegacyMessage{
-		Type:      legacyType,
-		Data:      data,
-		Timestamp: msg.Timestamp,
-	}
+// NewHeadersMsg creates a new headers response
+func NewHeadersMsg(headers []*BlockHeader) *HeadersMsg {
+	return &HeadersMsg{Headers: headers}
+}
+
+// GetBlocksMsg requests full blocks for a height range
+type GetBlocksMsg struct {
+	StartHeight int64 `json:"start_height"`
+	StopHeight  int64 `json:"stop_height"`
+}
+
+// NewGetBlocksMsg creates a new get blocks request
+func NewGetBlocksMsg(start, stop int64) *GetBlocksMsg {
+	return &GetBlocksMsg{StartHeight: start, StopHeight: stop}
+}
+
+// BlocksMsg responds with full blocks
+type BlocksMsg struct {
+	Blocks []*Block `json:"blocks"`
+}
+
+// NewBlocksMsg creates a new blocks response
+func NewBlocksMsg(blocks []*Block) *BlocksMsg {
+	return &BlocksMsg{Blocks: blocks}
+}
+
+// NodeAnnounceMsg is a census heartbeat broadcast
+type NodeAnnounceMsg struct {
+	NodeID    string `json:"node_id"`
+	Version   string `json:"version"`
+	Height    int64  `json:"height"`
+	Services  uint64 `json:"services"`
+	PeerCount int    `json:"peer_count"`
+	Uptime    int64  `json:"uptime"`
+	Timestamp int64  `json:"timestamp"`
+	TTL       int    `json:"ttl"`
+	Signature string `json:"signature"`
+}
+
+// GetNodeAnnounceMsg requests cached announcements from a peer
+type GetNodeAnnounceMsg struct {
+	// Empty — request all cached announcements
+}
+
+// NewGetNodeAnnounceMsg creates a new request for cached announcements
+func NewGetNodeAnnounceMsg() *GetNodeAnnounceMsg {
+	return &GetNodeAnnounceMsg{}
 }

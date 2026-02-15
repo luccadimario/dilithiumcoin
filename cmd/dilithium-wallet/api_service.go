@@ -8,6 +8,9 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,8 +21,180 @@ import (
 
 const DLTUnit int64 = 100_000_000
 
-// SeedNodeAPI is the public seed node API — works without running a local node
-const SeedNodeAPI = "https://api.dilithiumcoin.com"
+// hardcodedSeeds is the list of seed node API endpoints for discovery.
+var hardcodedSeeds = []string{
+	"http://seed.dilithiumcoin.com:8001",
+	"http://seed1.dilithiumcoin.com:8001",
+	"http://seed2.dilithiumcoin.com:8001",
+	"http://seed3.dilithiumcoin.com:8001",
+	"http://seed4.dilithiumcoin.com:8001",
+	"http://seed5.dilithiumcoin.com:8001",
+	"http://node1.dilithiumcoin.com:8001",
+	"http://node2.dilithiumcoin.com:8001",
+}
+
+// nodeCandidate represents a discovered node with quality metrics.
+type nodeCandidate struct {
+	URL       string  `json:"url"`
+	Height    float64 `json:"height"`
+	Latency   int64   `json:"latency_ms"`
+	Reachable bool    `json:"reachable"`
+	LastSeen  int64   `json:"last_seen"`
+}
+
+// walletNodeCacheFile is the path to the cached known-good nodes file.
+var walletNodeCacheFile string
+
+func init() {
+	home, _ := os.UserHomeDir()
+	walletNodeCacheFile = filepath.Join(home, ".dilithium", "nodes.dat")
+}
+
+// discoverBestNode finds the best reachable node using multi-tier resolution:
+// 1. Cached known-good nodes (nodes.dat)
+// 2. localhost:8001 (local node)
+// 3. Hardcoded seed list
+func discoverBestNode() string {
+	var candidates []nodeCandidate
+	seen := make(map[string]bool)
+
+	// 1. Load cached nodes
+	cached := loadWalletNodeCache()
+	for _, c := range cached {
+		if !seen[c.URL] {
+			candidates = append(candidates, c)
+			seen[c.URL] = true
+		}
+	}
+
+	// 2. Try localhost
+	localURL := "http://localhost:8001"
+	if !seen[localURL] {
+		candidates = append(candidates, nodeCandidate{URL: localURL})
+		seen[localURL] = true
+	}
+
+	// 3. Hardcoded seeds
+	for _, seed := range hardcodedSeeds {
+		if !seen[seed] {
+			candidates = append(candidates, nodeCandidate{URL: seed})
+			seen[seed] = true
+		}
+	}
+
+	// Probe all candidates in parallel
+	probed := probeWalletNodes(candidates)
+
+	// Rank: reachable first, then by height desc, then latency asc
+	sort.Slice(probed, func(i, j int) bool {
+		if probed[i].Reachable != probed[j].Reachable {
+			return probed[i].Reachable
+		}
+		if probed[i].Height != probed[j].Height {
+			return probed[i].Height > probed[j].Height
+		}
+		return probed[i].Latency < probed[j].Latency
+	})
+
+	// Save reachable nodes to cache
+	var reachable []nodeCandidate
+	for _, c := range probed {
+		if c.Reachable {
+			reachable = append(reachable, c)
+		}
+	}
+	if len(reachable) > 0 {
+		saveWalletNodeCache(reachable)
+		return reachable[0].URL
+	}
+
+	// Nothing reachable — return localhost and let commands fail with a useful error
+	return "http://localhost:8001"
+}
+
+// probeWalletNodes concurrently checks each candidate's /status endpoint.
+func probeWalletNodes(candidates []nodeCandidate) []nodeCandidate {
+	client := &http.Client{Timeout: 3 * time.Second}
+	result := make([]nodeCandidate, len(candidates))
+	var wg sync.WaitGroup
+
+	for i, c := range candidates {
+		wg.Add(1)
+		go func(idx int, candidate nodeCandidate) {
+			defer wg.Done()
+
+			start := time.Now()
+			resp, err := client.Get(candidate.URL + "/status")
+			latency := time.Since(start).Milliseconds()
+
+			result[idx] = candidate
+			result[idx].Latency = latency
+
+			if err != nil {
+				result[idx].Reachable = false
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != 200 {
+				result[idx].Reachable = false
+				return
+			}
+
+			var apiResp apiResponse
+			if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+				result[idx].Reachable = false
+				return
+			}
+
+			result[idx].Reachable = true
+			result[idx].LastSeen = time.Now().Unix()
+
+			if apiResp.Data != nil {
+				if h, ok := apiResp.Data["blockchain_height"].(float64); ok {
+					result[idx].Height = h
+				}
+			}
+		}(i, c)
+	}
+
+	wg.Wait()
+	return result
+}
+
+// saveWalletNodeCache writes known-good nodes to ~/.dilithium/nodes.dat.
+func saveWalletNodeCache(nodes []nodeCandidate) {
+	dir := filepath.Dir(walletNodeCacheFile)
+	os.MkdirAll(dir, 0700)
+
+	data, err := json.MarshalIndent(nodes, "", "  ")
+	if err != nil {
+		return
+	}
+	os.WriteFile(walletNodeCacheFile, data, 0600)
+}
+
+// loadWalletNodeCache reads cached nodes, skipping entries older than 1 hour.
+func loadWalletNodeCache() []nodeCandidate {
+	data, err := os.ReadFile(walletNodeCacheFile)
+	if err != nil {
+		return nil
+	}
+
+	var nodes []nodeCandidate
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil
+	}
+
+	cutoff := time.Now().Unix() - 3600
+	var fresh []nodeCandidate
+	for _, n := range nodes {
+		if n.LastSeen >= cutoff {
+			fresh = append(fresh, n)
+		}
+	}
+	return fresh
+}
 
 type apiResponse struct {
 	Success bool                   `json:"success"`

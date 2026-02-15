@@ -221,17 +221,10 @@ func (p *Peer) readLoop() {
 
 		data := scanner.Bytes()
 
-		// Try to decode as P2PMessage first
 		msg, err := DecodeMessage(data)
 		if err != nil {
-			// Try legacy format
-			var legacy LegacyMessage
-			if jsonErr := json.Unmarshal(data, &legacy); jsonErr == nil {
-				msg, _ = legacy.ToP2PMessage()
-			} else {
-				fmt.Printf("Error decoding message from %s: %v\n", p.Addr, err)
-				continue
-			}
+			fmt.Printf("Error decoding message from %s: %v\n", p.Addr, err)
+			continue
 		}
 
 		p.mutex.Lock()
@@ -364,11 +357,12 @@ func (p *Peer) Info() map[string]interface{} {
 
 // AddrBookEntry stores information about a known peer address
 type AddrBookEntry struct {
-	Addr        *NetAddr
-	LastAttempt time.Time
-	LastSuccess time.Time
-	Attempts    int
-	Source      string // Address of peer that told us about this
+	Addr         *NetAddr
+	LastAttempt  time.Time
+	LastSuccess  time.Time
+	LastVerified time.Time // Last time address was verified reachable
+	Attempts     int
+	Source       string // Address of peer that told us about this
 }
 
 // ============================================================================
@@ -379,6 +373,7 @@ type AddrBookEntry struct {
 type PeerManager struct {
 	// Configuration
 	config    *PeerConfig
+	netConfig *NetworkConfig // Protocol v2 network config
 	services  ServiceFlag
 	localAddr *NetAddr
 	nonce     uint64 // Our unique nonce to detect self-connections
@@ -397,6 +392,9 @@ type PeerManager struct {
 
 	// Node reference
 	node *Node
+
+	// Census manager (protocol v2)
+	census *CensusManager
 
 	// Seed nodes for fallback reconnection
 	seedNodes []string
@@ -432,6 +430,14 @@ func (pm *PeerManager) Start(localAddr *NetAddr) {
 	go pm.maintainPeers()
 	go pm.cleanupBanned()
 	go pm.rebroadcastMempool()
+
+	// Protocol v2 goroutines
+	gossipInterval := 10 * time.Minute
+	if pm.netConfig != nil && pm.netConfig.GossipInterval > 0 {
+		gossipInterval = pm.netConfig.GossipInterval
+	}
+	go pm.activeAddrGossip(gossipInterval)
+	go pm.verifyAddresses()
 
 	fmt.Println("Peer manager started")
 }
@@ -669,24 +675,25 @@ func (pm *PeerManager) handleVersionAck(peer *Peer) {
 		peer.SendMessage(MsgTypeAddr, NewAddrMsg(addrs))
 	}
 
-	// Sync blockchain if they have more blocks
+	// Incremental sync: request headers if peer has more blocks
 	ourHeight := pm.node.Blockchain.GetBlockCount()
 	if startHeight > ourHeight {
-		fmt.Printf("Peer %s has longer chain (%d vs %d), requesting sync...\n",
+		fmt.Printf("Peer %s has longer chain (%d vs %d), starting incremental sync...\n",
 			peer.Addr, startHeight, ourHeight)
-		// Request blocks we don't have
-		pm.requestChainSync(peer)
+		pm.startIncrementalSync(peer)
 	}
 
 	// Also sync mempool
 	peer.SendMessage(MsgTypeMempool, NewMempoolMsg())
 
-	// Send our chain to peer if we have more blocks
+	// If we have more blocks, let the peer know via headers
 	if ourHeight > startHeight {
-		fmt.Printf("Sending our chain to %s (we have %d, they have %d)\n",
+		fmt.Printf("We have more blocks than %s (%d vs %d), they will sync from us\n",
 			peer.Addr, ourHeight, startHeight)
-		pm.sendChain(peer)
 	}
+
+	// Request cached census announcements
+	peer.SendMessage(MsgTypeGetNodeAnnounce, NewGetNodeAnnounceMsg())
 }
 
 // ============================================================================
@@ -778,12 +785,40 @@ func (pm *PeerManager) handleMessage(peer *Peer, msg *P2PMessage) {
 			fmt.Printf("Peer %s rejected %s: %s (%s)\n", peer.Addr, reject.Message, reject.Reason, reject.Code)
 		}
 
-	// Legacy message support
-	case MsgTypeTransaction:
-		pm.handleLegacyTransaction(peer, msg)
+	// Protocol v2: incremental sync
+	case MsgTypeGetHeaders:
+		var gh GetHeadersMsg
+		if err := msg.Decode(&gh); err == nil {
+			pm.handleGetHeaders(peer, &gh)
+		}
 
-	case MsgTypeChain:
-		pm.handleLegacyChain(peer, msg)
+	case MsgTypeHeaders:
+		var h HeadersMsg
+		if err := msg.Decode(&h); err == nil {
+			pm.handleHeaders(peer, &h)
+		}
+
+	case MsgTypeGetBlocks:
+		var gb GetBlocksMsg
+		if err := msg.Decode(&gb); err == nil {
+			pm.handleGetBlocks(peer, &gb)
+		}
+
+	case MsgTypeBlocks:
+		var b BlocksMsg
+		if err := msg.Decode(&b); err == nil {
+			pm.handleBlocks(peer, &b)
+		}
+
+	// Protocol v2: census
+	case MsgTypeNodeAnnounce:
+		var ann NodeAnnounceMsg
+		if err := msg.Decode(&ann); err == nil {
+			pm.handleNodeAnnounce(peer, &ann)
+		}
+
+	case MsgTypeGetNodeAnnounce:
+		pm.handleGetNodeAnnounce(peer)
 
 	default:
 		fmt.Printf("Unknown message type %s from %s\n", msg.Type, peer.Addr)
@@ -839,14 +874,9 @@ func (pm *PeerManager) handleGetData(peer *Peer, msg *GetDataMsg) {
 				peer.SendMessage(MsgTypeTx, NewTxMsg(tx))
 			}
 		case InvTypeBlock:
-			if inv.Hash == "sync" {
-				// Special sync request — send full chain
-				pm.sendChain(peer)
-			} else {
-				block := pm.node.Blockchain.GetBlock(inv.Hash)
-				if block != nil {
-					peer.SendMessage(MsgTypeBlock, NewBlockMsg(block))
-				}
+			block := pm.node.Blockchain.GetBlock(inv.Hash)
+			if block != nil {
+				peer.SendMessage(MsgTypeBlock, NewBlockMsg(block))
 			}
 		}
 	}
@@ -910,50 +940,333 @@ func (pm *PeerManager) handleMempool(peer *Peer) {
 	peer.SendMessage(MsgTypeInv, NewInvMsg(inv))
 }
 
-// handleLegacyTransaction processes a legacy transaction message
-func (pm *PeerManager) handleLegacyTransaction(peer *Peer, msg *P2PMessage) {
-	legacyMsg := FromP2PMessage(msg)
-	pm.node.handleMessage(Message{
-		Type:      legacyMsg.Type,
-		Data:      legacyMsg.Data,
-		Timestamp: legacyMsg.Timestamp,
-	}, peer.Addr)
+// ============================================================================
+// PROTOCOL V2: INCREMENTAL SYNC
+// ============================================================================
+
+// startIncrementalSync begins syncing by requesting headers from our tip.
+func (pm *PeerManager) startIncrementalSync(peer *Peer) {
+	ourHeight := pm.node.Blockchain.GetBlockCount()
+	// Request headers from our height onwards (let the peer decide the upper bound)
+	peer.SendMessage(MsgTypeGetHeaders, NewGetHeadersMsg(ourHeight, 0))
 }
 
-// handleLegacyChain processes a legacy chain message
-func (pm *PeerManager) handleLegacyChain(peer *Peer, msg *P2PMessage) {
-	// Decode the chain directly
-	var blocks []*Block
-	if err := msg.Decode(&blocks); err != nil {
-		fmt.Printf("Error decoding chain from %s: %v\n", peer.Addr, err)
+// handleGetHeaders responds with block headers for the requested range.
+func (pm *PeerManager) handleGetHeaders(peer *Peer, msg *GetHeadersMsg) {
+	blocks := pm.node.Blockchain.GetBlocks()
+	chainLen := int64(len(blocks))
+
+	start := msg.StartHeight
+	if start < 0 {
+		start = 0
+	}
+	if start >= chainLen {
+		// We don't have blocks they need
+		peer.SendMessage(MsgTypeHeaders, NewHeadersMsg(nil))
 		return
 	}
 
-	fmt.Printf("Received chain with %d blocks from %s\n", len(blocks), peer.Addr)
+	stop := msg.StopHeight
+	if stop <= 0 || stop > chainLen {
+		stop = chainLen
+	}
 
-	pm.node.Blockchain.mutex.Lock()
-	defer pm.node.Blockchain.mutex.Unlock()
+	// Limit to 2000 headers per response
+	const maxHeaders = 2000
+	if stop-start > maxHeaders {
+		stop = start + maxHeaders
+	}
 
-	// Silently ignore chains that aren't longer
-	if len(blocks) <= len(pm.node.Blockchain.Blocks) {
+	headers := make([]*BlockHeader, 0, stop-start)
+	for i := start; i < stop; i++ {
+		b := blocks[i]
+		headers = append(headers, &BlockHeader{
+			Index:          b.Index,
+			Timestamp:      b.Timestamp,
+			PreviousHash:   b.PreviousHash,
+			Hash:           b.Hash,
+			Nonce:          b.Nonce,
+			Difficulty:     b.Difficulty,
+			DifficultyBits: b.DifficultyBits,
+			TxCount:        len(b.Transactions),
+		})
+	}
+
+	peer.SendMessage(MsgTypeHeaders, NewHeadersMsg(headers))
+}
+
+// handleHeaders processes received headers and requests full blocks.
+func (pm *PeerManager) handleHeaders(peer *Peer, msg *HeadersMsg) {
+	if len(msg.Headers) == 0 {
 		return
 	}
 
-	// Use cumulative work for chain selection (shannon #7)
-	if cumulativeWork(blocks) > cumulativeWork(pm.node.Blockchain.Blocks) && pm.node.isValidChain(blocks) {
-		fmt.Printf("Replacing our chain (length %d) with peer's chain (length %d)\n",
-			len(pm.node.Blockchain.Blocks), len(blocks))
+	ourHeight := pm.node.Blockchain.GetBlockCount()
 
-		// Cancel any in-progress mining
-		pm.node.cancelMining()
+	// Find the range of blocks we need
+	var needStart, needStop int64
+	needStart = -1
 
-		pm.node.Blockchain.Blocks = blocks
-		pm.node.Blockchain.persistChainFrom(0)
-		pm.node.Blockchain.recalcDifficultyFromChain()
-		pm.node.Blockchain.clearMempool()
-	} else if len(blocks) > len(pm.node.Blockchain.Blocks) {
-		fmt.Printf("Received invalid chain from %s, ignoring\n", peer.Addr)
+	for _, hdr := range msg.Headers {
+		// We need blocks beyond our chain
+		if hdr.Index >= ourHeight {
+			if needStart < 0 {
+				needStart = hdr.Index
+			}
+			needStop = hdr.Index + 1
+		}
 	}
+
+	if needStart < 0 {
+		return // Nothing new
+	}
+
+	// Request full blocks in batches of 500
+	const maxBlocksPerRequest = 500
+	batchStop := needStop
+	if batchStop-needStart > maxBlocksPerRequest {
+		batchStop = needStart + maxBlocksPerRequest
+	}
+
+	fmt.Printf("Requesting blocks %d-%d from %s\n", needStart, batchStop-1, peer.Addr)
+	peer.SendMessage(MsgTypeGetBlocks, NewGetBlocksMsg(needStart, batchStop))
+}
+
+// handleGetBlocks responds with full blocks for the requested range.
+func (pm *PeerManager) handleGetBlocks(peer *Peer, msg *GetBlocksMsg) {
+	blocks := pm.node.Blockchain.GetBlocks()
+	chainLen := int64(len(blocks))
+
+	start := msg.StartHeight
+	if start < 0 {
+		start = 0
+	}
+	if start >= chainLen {
+		peer.SendMessage(MsgTypeBlocks, NewBlocksMsg(nil))
+		return
+	}
+
+	stop := msg.StopHeight
+	if stop <= 0 || stop > chainLen {
+		stop = chainLen
+	}
+
+	// Limit to 500 blocks per response
+	const maxBlocks = 500
+	if stop-start > maxBlocks {
+		stop = start + maxBlocks
+	}
+
+	result := make([]*Block, 0, stop-start)
+	for i := start; i < stop; i++ {
+		result = append(result, blocks[i])
+	}
+
+	peer.SendMessage(MsgTypeBlocks, NewBlocksMsg(result))
+}
+
+// handleBlocks processes received blocks and requests more if needed.
+func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
+	if len(msg.Blocks) == 0 {
+		return
+	}
+
+	fmt.Printf("Received %d blocks from %s (range %d-%d)\n",
+		len(msg.Blocks), peer.Addr, msg.Blocks[0].Index, msg.Blocks[len(msg.Blocks)-1].Index)
+
+	added := 0
+	for _, block := range msg.Blocks {
+		if block == nil {
+			continue
+		}
+
+		// Use the existing block handler logic
+		legacyMsg := &Message{
+			Type:      "block",
+			Data:      block,
+			Timestamp: time.Now().Unix(),
+		}
+		pm.node.handleMessage(*legacyMsg, peer.Addr)
+		added++
+	}
+
+	// Check if we need more blocks from this peer
+	peer.mutex.RLock()
+	peerHeight := peer.StartHeight
+	peer.mutex.RUnlock()
+
+	ourHeight := pm.node.Blockchain.GetBlockCount()
+	if ourHeight < peerHeight {
+		// Request next batch
+		fmt.Printf("Need more blocks from %s (our: %d, peer: %d)\n", peer.Addr, ourHeight, peerHeight)
+		pm.startIncrementalSync(peer)
+	} else if added > 0 {
+		fmt.Printf("Incremental sync complete with %s at height %d\n", peer.Addr, ourHeight)
+	}
+}
+
+// ============================================================================
+// PROTOCOL V2: CENSUS FORWARDING
+// ============================================================================
+
+// handleNodeAnnounce validates and forwards a census announcement.
+func (pm *PeerManager) handleNodeAnnounce(peer *Peer, ann *NodeAnnounceMsg) {
+	if pm.census == nil {
+		return
+	}
+
+	shouldForward := pm.census.ProcessAnnouncement(ann)
+	if !shouldForward {
+		return
+	}
+
+	// Forward to up to 3 random peers with TTL-1
+	forwarded := *ann
+	forwarded.TTL--
+	if forwarded.TTL <= 0 {
+		return
+	}
+
+	peers := pm.GetActivePeers()
+	count := 0
+	for _, p := range peers {
+		if p.Addr == peer.Addr {
+			continue
+		}
+		p.SendMessage(MsgTypeNodeAnnounce, &forwarded)
+		count++
+		if count >= 3 {
+			break
+		}
+	}
+}
+
+// handleGetNodeAnnounce sends all cached announcements to the peer.
+func (pm *PeerManager) handleGetNodeAnnounce(peer *Peer) {
+	if pm.census == nil {
+		return
+	}
+
+	announcements := pm.census.GetAllAnnouncements()
+	for _, ann := range announcements {
+		peer.SendMessage(MsgTypeNodeAnnounce, ann)
+	}
+}
+
+// ============================================================================
+// PROTOCOL V2: ACTIVE ADDR GOSSIP
+// ============================================================================
+
+// activeAddrGossip periodically sends verified addresses to all peers.
+func (pm *PeerManager) activeAddrGossip(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pm.stopCh:
+			return
+		case <-ticker.C:
+			addrs := pm.GetVerifiedAddresses(MaxAddrPerMessage)
+			if len(addrs) == 0 {
+				continue
+			}
+			pm.Broadcast(MsgTypeAddr, NewAddrMsg(addrs))
+		}
+	}
+}
+
+// GetVerifiedAddresses returns addresses verified within the TTL window.
+func (pm *PeerManager) GetVerifiedAddresses(max int) []*NetAddr {
+	pm.addrBookMutex.RLock()
+	defer pm.addrBookMutex.RUnlock()
+
+	ttl := 4 * time.Hour
+	if pm.netConfig != nil && pm.netConfig.AddrTTL > 0 {
+		ttl = pm.netConfig.AddrTTL
+	}
+	cutoff := time.Now().Add(-ttl)
+
+	var addrs []*NetAddr
+	for _, entry := range pm.addrBook {
+		if isLocalAddress(entry.Addr.IP) {
+			continue
+		}
+		// Only include addresses verified recently
+		if !entry.LastVerified.IsZero() && entry.LastVerified.After(cutoff) {
+			addrs = append(addrs, entry.Addr)
+			if len(addrs) >= max {
+				break
+			}
+		}
+	}
+	return addrs
+}
+
+// verifyAddresses periodically TCP-probes random addresses to verify reachability.
+func (pm *PeerManager) verifyAddresses() {
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pm.stopCh:
+			return
+		case <-ticker.C:
+			pm.verifyRandomAddresses(10)
+		}
+	}
+}
+
+// verifyRandomAddresses probes up to n random addresses.
+func (pm *PeerManager) verifyRandomAddresses(n int) {
+	pm.addrBookMutex.RLock()
+	var candidates []string
+	for key, entry := range pm.addrBook {
+		if isLocalAddress(entry.Addr.IP) {
+			continue
+		}
+		candidates = append(candidates, key)
+	}
+	pm.addrBookMutex.RUnlock()
+
+	// Shuffle
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	})
+
+	if len(candidates) > n {
+		candidates = candidates[:n]
+	}
+
+	for _, addr := range candidates {
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err == nil {
+			conn.Close()
+			pm.addrBookMutex.Lock()
+			if entry, ok := pm.addrBook[addr]; ok {
+				entry.LastVerified = time.Now()
+			}
+			pm.addrBookMutex.Unlock()
+		}
+	}
+}
+
+// ============================================================================
+// PROTOCOL V2: SUBNET DIVERSITY
+// ============================================================================
+
+// getSubnet extracts the /16 prefix for IPv4 addresses.
+func getSubnet(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ip
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return fmt.Sprintf("%d.%d", v4[0], v4[1])
+	}
+	// IPv6: use first 4 bytes
+	return parsed.String()[:9]
 }
 
 // ============================================================================
@@ -1308,29 +1621,11 @@ func (pm *PeerManager) BroadcastBlock(block *Block) {
 	pm.Broadcast(MsgTypeBlock, NewBlockMsg(block))
 }
 
-// sendChain sends our full blockchain to a peer
-func (pm *PeerManager) sendChain(peer *Peer) {
-	blocks := pm.node.Blockchain.GetBlocks()
-
-	// Send as legacy chain message for compatibility
-	msg, err := NewP2PMessage(MsgTypeChain, blocks)
-	if err != nil {
-		fmt.Printf("Error creating chain message: %v\n", err)
-		return
-	}
-	peer.Send(msg)
-}
-
-// requestChainSync requests the blockchain from a peer
+// requestChainSync requests incremental sync from a peer (protocol v2).
 func (pm *PeerManager) requestChainSync(peer *Peer) {
-	// Request the peer's chain by sending a getdata for a block inventory
-	// The peer will respond with their full chain
 	ourHeight := pm.node.Blockchain.GetBlockCount()
-	fmt.Printf("Requesting chain sync from %s (our height: %d)\n", peer.Addr, ourHeight)
-
-	// Send a legacy chain request that triggers sendChain on the peer side
-	inv := []*InvVector{NewInvVector(InvTypeBlock, "sync")}
-	peer.SendMessage(MsgTypeGetData, NewGetDataMsg(inv))
+	fmt.Printf("Requesting incremental sync from %s (our height: %d)\n", peer.Addr, ourHeight)
+	pm.startIncrementalSync(peer)
 }
 
 // GetPeerByAddr returns a connected peer by address, or nil if not found
@@ -1393,7 +1688,8 @@ func (pm *PeerManager) checkAndConnectPeers() {
 	}
 }
 
-// connectToNewPeers attempts to connect to new peers from address book
+// connectToNewPeers attempts to connect to new peers from address book.
+// Prefers candidates from underrepresented subnets for diversity.
 func (pm *PeerManager) connectToNewPeers(count int) {
 	pm.addrBookMutex.RLock()
 	var candidates []*AddrBookEntry
@@ -1417,10 +1713,32 @@ func (pm *PeerManager) connectToNewPeers(count int) {
 	}
 	pm.addrBookMutex.RUnlock()
 
-	// Shuffle and try to connect
+	// Count existing subnet distribution
+	subnetCount := make(map[string]int)
+	for _, peer := range pm.GetActivePeers() {
+		host, _, err := net.SplitHostPort(peer.Addr)
+		if err == nil {
+			subnetCount[getSubnet(host)]++
+		}
+	}
+
+	// Sort candidates: prefer underrepresented subnets, then shuffle within tiers
 	rand.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
+
+	// Stable partition: underrepresented subnets first
+	prioritized := make([]*AddrBookEntry, 0, len(candidates))
+	rest := make([]*AddrBookEntry, 0, len(candidates))
+	for _, entry := range candidates {
+		subnet := getSubnet(entry.Addr.IP)
+		if subnetCount[subnet] == 0 {
+			prioritized = append(prioritized, entry)
+		} else {
+			rest = append(rest, entry)
+		}
+	}
+	candidates = append(prioritized, rest...)
 
 	connected := 0
 	for _, entry := range candidates {
