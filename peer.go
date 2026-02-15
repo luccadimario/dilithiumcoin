@@ -1188,25 +1188,27 @@ func (pm *PeerManager) handleBlocks(peer *Peer, msg *BlocksMsg) {
 		}
 
 		// Validate difficulty
+		// During sync, difficulty mismatch indicates a fork (different LWMA window),
+		// NOT a malicious peer. Only penalize if block doesn't meet its OWN PoW target.
 		expectedBits := bc.GetCurrentDifficultyBitsLocked()
-		if !meetsDifficultyBits(block.Hash, expectedBits) {
-			fmt.Printf("Batch block #%d does not meet difficulty target (%d bits) - stopping batch\n", block.Index, expectedBits)
+		blockBits := block.DifficultyBits
+		if blockBits == 0 {
+			blockBits = hexDigitsToDifficultyBits(block.Difficulty)
+		}
+
+		// Check block meets its own stated difficulty (actual PoW cheating = ban)
+		if !meetsDifficultyBits(block.Hash, blockBits) {
+			fmt.Printf("Batch block #%d does not meet its own difficulty target (%d bits) - stopping batch\n", block.Index, blockBits)
 			peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d bad PoW", block.Index))
 			break
 		}
-		if block.DifficultyBits > 0 {
-			if block.DifficultyBits != expectedBits {
-				fmt.Printf("Batch block #%d has wrong difficulty bits %d (expected %d) - stopping batch\n", block.Index, block.DifficultyBits, expectedBits)
-				peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d wrong difficulty bits", block.Index))
-				break
-			}
-		} else {
-			expectedHex := difficultyBitsToHexDigits(expectedBits)
-			if block.Difficulty != expectedHex {
-				fmt.Printf("Batch block #%d has wrong difficulty %d (expected %d) - stopping batch\n", block.Index, block.Difficulty, expectedHex)
-				peer.AddMisbehavior(PenaltyInvalidBlock, fmt.Sprintf("batch block #%d wrong difficulty", block.Index))
-				break
-			}
+
+		// Difficulty mismatch with our expectation = fork, not cheating
+		if blockBits != expectedBits {
+			fmt.Printf("Batch block #%d difficulty mismatch (block: %d bits, expected: %d bits) - fork detected\n",
+				block.Index, blockBits, expectedBits)
+			needsReorg = true
+			break
 		}
 
 		// Validate timestamp

@@ -120,25 +120,32 @@ func (n *Node) AddBlock(block *Block, peerAddr string) error {
 		return nil
 	}
 
-	// Validate block difficulty matches chain rules
-	expectedBits := n.Blockchain.GetCurrentDifficultyBitsLocked()
-	expectedHex := difficultyBitsToHexDigits(expectedBits)
-
-	if !meetsDifficultyBits(block.Hash, expectedBits) {
+	// Validate block difficulty
+	// Check block meets its own stated PoW target (actual cheating = penalize)
+	blockBits := block.DifficultyBits
+	if blockBits == 0 {
+		blockBits = hexDigitsToDifficultyBits(block.Difficulty)
+	}
+	if !meetsDifficultyBits(block.Hash, blockBits) {
 		n.Blockchain.mutex.Unlock()
-		return &BlockError{Reason: fmt.Sprintf("block #%d does not meet difficulty target (%d bits)", block.Index, expectedBits), Penalty: PenaltyInvalidBlock}
+		return &BlockError{Reason: fmt.Sprintf("block #%d does not meet its own difficulty target (%d bits)", block.Index, blockBits), Penalty: PenaltyInvalidBlock}
 	}
 
-	if block.DifficultyBits > 0 {
-		if block.DifficultyBits != expectedBits {
+	// Difficulty mismatch with our expectation = possible fork, not cheating
+	expectedBits := n.Blockchain.GetCurrentDifficultyBitsLocked()
+	if blockBits != expectedBits {
+		fmt.Printf("Block #%d difficulty mismatch (block: %d bits, expected: %d bits) - requesting sync\n",
+			block.Index, blockBits, expectedBits)
+		if n.PeerManager != nil {
 			n.Blockchain.mutex.Unlock()
-			return &BlockError{Reason: fmt.Sprintf("block #%d wrong difficulty bits %d (expected %d)", block.Index, block.DifficultyBits, expectedBits), Penalty: PenaltyInvalidBlock}
+			peer := n.PeerManager.GetPeerByAddr(peerAddr)
+			if peer != nil {
+				n.PeerManager.requestChainSync(peer)
+			}
+			return nil
 		}
-	} else {
-		if block.Difficulty != expectedHex {
-			n.Blockchain.mutex.Unlock()
-			return &BlockError{Reason: fmt.Sprintf("block #%d wrong difficulty %d (expected %d)", block.Index, block.Difficulty, expectedHex), Penalty: PenaltyInvalidBlock}
-		}
+		n.Blockchain.mutex.Unlock()
+		return nil
 	}
 
 	// Validate block timestamp
