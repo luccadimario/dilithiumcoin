@@ -108,6 +108,7 @@ func (n *Node) registerRoutes(mux *http.ServeMux) {
 	// Network endpoints
 	mux.HandleFunc("/network", rateLimitMiddleware(readLimiter, n.handleNetworkStats))
 	mux.HandleFunc("/network/addresses", rateLimitMiddleware(readLimiter, n.handleGetAddresses))
+	mux.HandleFunc("/network/census", rateLimitMiddleware(readLimiter, n.handleNetworkCensus))
 
 	// Explorer endpoints (for block explorer / dashboard)
 	mux.HandleFunc("/stats", rateLimitMiddleware(readLimiter, n.handleExplorerStats))
@@ -138,6 +139,7 @@ func (n *Node) printAPIInfo(apiHost, apiPort string) {
 	fmt.Printf("  GET  /peers/banned        - List banned peers\n")
 	fmt.Printf("  GET  /network             - Network statistics\n")
 	fmt.Printf("  GET  /network/addresses   - Known addresses\n")
+	fmt.Printf("  GET  /network/census      - Network census (node count, versions)\n")
 	fmt.Printf("  GET  /stats               - Explorer stats (for dashboards)\n")
 	fmt.Printf("  GET  /explorer/tx?hash=X  - Get transaction by hash\n")
 	fmt.Printf("  GET  /explorer/address?addr=X - Get address info\n")
@@ -192,18 +194,11 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get peer count from peer manager if available, otherwise use legacy
-	var peersCount, inboundCount, outboundCount int
-	if n.PeerManager != nil {
-		stats := n.PeerManager.GetNetworkStats()
-		peersCount = stats.PeerCount
-		inboundCount = stats.InboundCount
-		outboundCount = stats.OutboundCount
-	} else {
-		n.PeersMutex.RLock()
-		peersCount = len(n.Peers)
-		n.PeersMutex.RUnlock()
-	}
+	// Get peer count from peer manager
+	stats := n.PeerManager.GetNetworkStats()
+	peersCount := stats.PeerCount
+	inboundCount := stats.InboundCount
+	outboundCount := stats.OutboundCount
 
 	// Mining status
 	n.miningMutex.Lock()
@@ -671,27 +666,7 @@ func (n *Node) handlePeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if n.PeerManager != nil {
-		peers := n.PeerManager.GetPeers()
-		respondJSON(w, http.StatusOK, APIResponse{
-			Success: true,
-			Message: "Connected peers",
-			Data: map[string]interface{}{
-				"count": len(peers),
-				"peers": peers,
-			},
-		})
-		return
-	}
-
-	// Legacy fallback
-	n.PeersMutex.RLock()
-	peers := make([]string, 0, len(n.Peers))
-	for addr := range n.Peers {
-		peers = append(peers, addr)
-	}
-	n.PeersMutex.RUnlock()
-
+	peers := n.PeerManager.GetPeers()
 	respondJSON(w, http.StatusOK, APIResponse{
 		Success: true,
 		Message: "Connected peers",
@@ -718,12 +693,7 @@ func (n *Node) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var err error
-	if n.PeerManager != nil {
-		err = n.PeerManager.Connect(address)
-	} else {
-		err = n.ConnectToPeer(address)
-	}
+	err := n.PeerManager.Connect(address)
 
 	if err != nil {
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to connect: %v", err))
@@ -895,6 +865,33 @@ func (n *Node) handleGetAddresses(w http.ResponseWriter, r *http.Request) {
 		Data: map[string]interface{}{
 			"count":     len(addrList),
 			"addresses": addrList,
+		},
+	})
+}
+
+// handleNetworkCensus returns aggregated network census data
+func (n *Node) handleNetworkCensus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
+		return
+	}
+
+	if n.CensusManager == nil {
+		respondError(w, http.StatusNotImplemented, "Census not available")
+		return
+	}
+
+	census := n.CensusManager.GetCensus()
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Network census",
+		Data: map[string]interface{}{
+			"estimated_nodes":      census.EstimatedNodes,
+			"version_distribution": census.VersionDistribution,
+			"average_height":       census.AverageHeight,
+			"average_peer_count":   census.AveragePeerCount,
+			"timestamp":            census.Timestamp,
 		},
 	})
 }

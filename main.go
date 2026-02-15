@@ -79,7 +79,15 @@ func main() {
 		MaxAddrBook:      config.Network.MaxStoredPeers,
 	}
 	peerManager := NewPeerManager(node, peerConfig)
+	peerManager.netConfig = config.Network
 	node.PeerManager = peerManager
+
+	// Create census manager (protocol v2)
+	if config.Network.CensusEnabled {
+		censusManager := NewCensusManager(config.DataDir, node)
+		node.CensusManager = censusManager
+		peerManager.census = censusManager
+	}
 
 	// Determine local address for P2P
 	localAddr := NewNetAddr("0.0.0.0", parsePort(config.P2PPort), SFNodeNetwork)
@@ -103,6 +111,11 @@ func main() {
 
 	// Start peer manager
 	peerManager.Start(localAddr)
+
+	// Start census manager
+	if node.CensusManager != nil {
+		node.CensusManager.Start()
+	}
 
 	// Start API server
 	if config.API.Enabled {
@@ -278,6 +291,11 @@ func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config 
 
 	// Stop mining
 	node.StopAutoMining()
+
+	// Stop census manager
+	if node.CensusManager != nil {
+		node.CensusManager.Stop()
+	}
 
 	// Save peer database
 	fmt.Println("Saving peer database...")

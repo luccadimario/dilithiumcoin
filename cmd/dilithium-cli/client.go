@@ -71,24 +71,10 @@ func getJSON(url string) (*APIResponse, error) {
 	return &apiResp, nil
 }
 
-// SeedNodeAPI is the public seed node API URL used as fallback
-const SeedNodeAPI = "https://api.dilithiumcoin.com"
-
-// resolveNodeURL tries the provided URL, falls back to seed node if unreachable
+// resolveNodeURL discovers the best available node.
+// Uses auto-discovery: cache -> localhost -> DNS seeds -> hardcoded seeds.
 func resolveNodeURL(nodeURL string) string {
-	// Try the provided URL first
-	quickClient := &http.Client{Timeout: 3 * time.Second}
-	resp, err := quickClient.Get(nodeURL + "/status")
-	if err == nil {
-		resp.Body.Close()
-		if resp.StatusCode == 200 {
-			return nodeURL
-		}
-	}
-
-	// Fall back to seed node
-	fmt.Printf("Local node (%s) not reachable, using seed node...\n", nodeURL)
-	return SeedNodeAPI
+	return DiscoverBestNode(nodeURL)
 }
 
 // cmdBalance checks balance for an address

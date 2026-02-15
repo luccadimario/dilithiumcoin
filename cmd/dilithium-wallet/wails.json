@@ -9,5 +9,12 @@
   "author": {
     "name": "Dilithium",
     "email": "dev@dilithiumcoin.com"
+  },
+  "info": {
+    "companyName": "Dilithium",
+    "productName": "Dilithium Wallet",
+    "productVersion": "1.1.0",
+    "copyright": "Copyright 2025 Dilithium Contributors",
+    "comments": "Quantum-safe cryptocurrency wallet"
   }
 }

@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
 const WalletAppVersion = "1.1.0"
@@ -78,28 +76,22 @@ type App struct {
 func NewApp() *App {
 	return &App{
 		wallet: newWalletService(defaultWalletDir),
-		api:    newAPIService(SeedNodeAPI),
+		api:    newAPIService("http://localhost:8001"),
 	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// Try local node first — if reachable, use it (faster + supports tx submission)
+	// Discover the best available node using multi-tier resolution
 	go a.resolveNode()
 }
 
-// resolveNode checks if a local node is running and switches to it if so
+// resolveNode discovers the best reachable node using multi-tier discovery:
+// cached nodes → localhost → hardcoded seeds
 func (a *App) resolveNode() {
-	localURL := "http://localhost:8001"
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(localURL + "/status")
-	if err == nil {
-		resp.Body.Close()
-		if resp.StatusCode == 200 {
-			a.api.setNodeURL(localURL)
-		}
-	}
+	best := discoverBestNode()
+	a.api.setNodeURL(best)
 }
 
 // --- Wallet lifecycle ---

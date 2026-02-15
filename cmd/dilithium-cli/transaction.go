@@ -131,25 +131,45 @@ func cmdSend(args []string) {
 		"public_key": publicKeyHex,
 	}
 
-	// Resolve node URL (try provided, fall back to seed node)
-	activeNode := resolveNodeURL(*nodeURL)
+	// Submit to multiple discovered nodes in parallel for reliability
+	targets := DiscoverAllReachable(*nodeURL)
 
-	resp, err := postJSON(activeNode+"/transaction", tx)
-	if err != nil {
-		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
-		fmt.Printf("       %v\n", err)
-		fmt.Println()
-		fmt.Println("Is the node running? Start it with:")
-		fmt.Println("  dilithium --api-port 8001")
-		os.Exit(1)
+	type submitResult struct {
+		url  string
+		resp *APIResponse
+		err  error
 	}
 
-	if resp.Success {
-		fmt.Println("Transaction submitted successfully!")
+	results := make(chan submitResult, len(targets))
+	for _, target := range targets {
+		go func(u string) {
+			r, e := postJSON(u+"/transaction", tx)
+			results <- submitResult{url: u, resp: r, err: e}
+		}(target)
+	}
+
+	var anySuccess bool
+	var lastErr string
+	for i := 0; i < len(targets); i++ {
+		res := <-results
+		if res.err == nil && res.resp != nil && res.resp.Success {
+			anySuccess = true
+		} else if res.err != nil {
+			lastErr = fmt.Sprintf("Could not connect to %s: %v", res.url, res.err)
+		} else if res.resp != nil && !res.resp.Success {
+			lastErr = fmt.Sprintf("Node %s rejected: %s", res.url, res.resp.Message)
+		}
+	}
+
+	if anySuccess {
+		fmt.Printf("Transaction submitted to %d node(s) successfully!\n", len(targets))
 		fmt.Println()
 		fmt.Println("The transaction is now in the mempool waiting to be mined.")
 	} else {
-		fmt.Printf("Transaction failed: %s\n", resp.Message)
+		fmt.Printf("Transaction failed: %s\n", lastErr)
+		fmt.Println()
+		fmt.Println("Is the node running? Start it with:")
+		fmt.Println("  dilithium --api-port 8001")
 		os.Exit(1)
 	}
 }

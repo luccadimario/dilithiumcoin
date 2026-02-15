@@ -18,7 +18,7 @@ export const balance = writable({
 
 // Node connection
 export const nodeConnected = writable(false)
-export const nodeURL = writable('https://api.dilithiumcoin.com')
+export const nodeURL = writable('http://localhost:8001')
 
 // UI state
 export const loading = writable(false)

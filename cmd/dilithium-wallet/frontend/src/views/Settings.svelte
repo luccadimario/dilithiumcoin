@@ -72,7 +72,7 @@
             id="node-url"
             type="text"
             bind:value={nodeInput}
-            placeholder="https://api.dilithiumcoin.com"
+            placeholder="http://localhost:8001"
           />
           <button class="btn btn-sm" on:click={testNode} disabled={testing}>
             {testing ? 'Testing...' : 'Test'}
