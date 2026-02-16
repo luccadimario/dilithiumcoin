@@ -62,6 +62,11 @@ impl GpuWorker {
             let effective_batch = self.batch_size.min(remaining);
             nonce_counter += effective_batch;
 
+            log::info!(
+                "[WORKER] mine_batch: start_nonce={}, effective_batch={}, tail_len={}, suffix_len={}, diff_bits={}, total_prefix_len={}",
+                start_nonce, effective_batch, tail.len(), suffix.len(), diff_bits, total_prefix_len
+            );
+
             // Mine batch using the active GPU backend
             match backend.mine_batch(
                 midstate,
@@ -73,10 +78,12 @@ impl GpuWorker {
                 effective_batch,
             )? {
                 Some((nonce, hash)) => {
+                    log::info!("[WORKER] mine_batch returned SOLUTION: nonce={}", nonce);
                     self.hash_count.fetch_add(effective_batch, Ordering::Relaxed);
                     return Ok(Some(MiningResult { nonce, hash }));
                 }
                 None => {
+                    log::info!("[WORKER] mine_batch returned None (no solution), hashes += {}", effective_batch);
                     self.hash_count.fetch_add(effective_batch, Ordering::Relaxed);
                 }
             }

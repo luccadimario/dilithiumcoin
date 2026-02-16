@@ -39,6 +39,13 @@ mine_kernel(
     // Compute nonce for this thread
     uint64_t nonce = params.nonce_start + tid;
 
+    // Debug: print from first thread only
+    if (tid == 0) {
+        printf("[KERNEL] Thread 0: nonce=%llu, tail_len=%d, suffix_len=%d, diff_bits=%d, prefix_len=%llu\n",
+               (unsigned long long)nonce, params.tail_len, params.suffix_len,
+               params.difficulty_bits, (unsigned long long)params.total_prefix_len);
+    }
+
     // Convert nonce to decimal string
     uint8_t nonce_str[20];
     int nonce_len = uint64_to_str(nonce, nonce_str);
@@ -112,6 +119,12 @@ mine_kernel(
         }
 
         sha256_compress(state, W);
+    }
+
+    // Debug: confirm thread 0 completed hashing
+    if (tid == 0) {
+        printf("[KERNEL] Thread 0 done: num_blocks=%d, pos_before_pad=%d, hash[0]=%08x\n",
+               num_blocks, (int)(params.tail_len + nonce_len + params.suffix_len + 1), state[0]);
     }
 
     // Check if this hash meets difficulty
@@ -244,16 +257,34 @@ int gpu_mine_batch(
         grid_size = 2147483647ULL;
     }
 
+    fprintf(stderr, "[GPU DEBUG] Launching kernel: grid=%llu, threads=%d, batch=%llu, start_nonce=%llu, tail_len=%d, suffix_len=%d, diff_bits=%d, prefix_len=%llu\n",
+            (unsigned long long)grid_size, threads_per_block,
+            (unsigned long long)batch_size, (unsigned long long)params.nonce_start,
+            params.tail_len, params.suffix_len, params.difficulty_bits,
+            (unsigned long long)params.total_prefix_len);
+    fflush(stderr);
+
     mine_kernel<<<(unsigned int)grid_size, threads_per_block>>>(
         params, batch_size, d_result_nonce, d_result_found
     );
 
+    // Check for launch errors immediately (before synchronize)
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[GPU] Kernel LAUNCH error: %s\n", cudaGetErrorString(err));
+        return -1;
+    }
+    fprintf(stderr, "[GPU DEBUG] Kernel launched OK, waiting for sync...\n");
+    fflush(stderr);
+
     // Wait for completion
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
-        fprintf(stderr, "[GPU] Kernel error: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "[GPU] Kernel sync error: %s\n", cudaGetErrorString(err));
         return -1;
     }
+    fprintf(stderr, "[GPU DEBUG] Kernel sync complete\n");
+    fflush(stderr);
 
     // Check if solution found
     int found = 0;
