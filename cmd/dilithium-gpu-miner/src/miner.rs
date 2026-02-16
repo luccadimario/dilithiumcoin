@@ -359,10 +359,16 @@ impl Miner {
                                 return Ok(Some((solution.nonce, solution.hash, rotated_block.clone())));
                             }
                             Ok(Ok(None)) => {
+                                // Update stats on every worker completion
+                                let total = cumulative_hashes.load(Ordering::Relaxed);
+                                self.total_hashes.store(base_total_hashes + total, Ordering::Relaxed);
+                                let elapsed = start_time.elapsed().as_secs_f64();
+                                if elapsed > 0.0 {
+                                    self.current_hashrate.store((total as f64 / elapsed) as u64, Ordering::Relaxed);
+                                }
+
                                 if worker_stop.load(Ordering::Relaxed) {
                                     // Stale work - return to main loop
-                                    let total = cumulative_hashes.load(Ordering::Relaxed);
-                                    self.total_hashes.store(base_total_hashes + total, Ordering::Relaxed);
                                     return Ok(None);
                                 }
                                 // Nonce space exhausted - rotate timestamp and retry
