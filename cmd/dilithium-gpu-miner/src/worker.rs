@@ -41,7 +41,14 @@ impl GpuWorker {
         // E.g., for max_nonce=9999999999, start at 1000000000 (all 10-digit nonces).
         let start_offset = if self.max_nonce >= 10 {
             let digits = (self.max_nonce as f64).log10() as u32;
-            10u64.pow(digits)
+            let offset = 10u64.pow(digits);
+            // Guard against f64 precision loss: e.g. 9999999999999999999_u64
+            // rounds to 1e19 as f64, making offset = 10^19 > max_nonce.
+            if offset > self.max_nonce {
+                offset / 10
+            } else {
+                offset
+            }
         } else {
             0
         };
