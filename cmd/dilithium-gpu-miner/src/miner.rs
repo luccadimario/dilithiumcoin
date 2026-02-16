@@ -313,11 +313,6 @@ impl Miner {
                 u64::MAX
             };
 
-            log::info!(
-                "[DEBUG] Prefix: {} bytes | Tail: {} bytes | Suffix: {} bytes | max_nonce_digits: {} | max_nonce: {} | batch_size: {}",
-                prefix.len(), tail.len(), suffix.len(), max_nonce_digits, max_nonce, self.batch_size
-            );
-
             // Create worker for this rotation
             let hash_count = Arc::new(AtomicU64::new(0));
             let worker_stop = Arc::new(AtomicBool::new(false));
