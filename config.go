@@ -14,7 +14,7 @@ import (
 
 const (
 	// Version is the current Dilithium version
-	Version = "4.0.4"
+	Version = "4.0.5"
 
 	// VersionMajor is the major version number
 	VersionMajor = 4

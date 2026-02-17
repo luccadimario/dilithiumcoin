@@ -199,11 +199,17 @@ func (pc *PoolClient) handleWork(msg *PoolMessage) {
 func (pc *PoolClient) mineForPool(msg *PoolMessage, cancelCh chan struct{}) {
 	template := msg.Template
 
+	// Sum transaction fees from pending transactions
+	var totalFees int64
+	for _, tx := range msg.Txs {
+		totalFees += tx.Fee
+	}
+
 	// Build coinbase + transactions
 	coinbase := &Transaction{
 		From:      "SYSTEM",
 		To:        msg.Address,
-		Amount:    template.Reward,
+		Amount:    template.Reward + totalFees,
 		Timestamp: time.Now().Unix(),
 		Signature: fmt.Sprintf("coinbase-%d-%d", template.Index, time.Now().UnixNano()),
 	}

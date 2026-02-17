@@ -251,11 +251,35 @@ func (pw *PoolWorker) runPoolSession() error {
 
 // mineAndSubmitShares continuously mines and submits shares until context is cancelled.
 func (pw *PoolWorker) mineAndSubmitShares(ctx context.Context, work *PoolWorkMessage, encoder *json.Encoder, encoderMu *sync.Mutex) {
-	// Build block from template
+	// Sum transaction fees from pending transactions
+	var totalFees int64
+	for _, tx := range work.Transactions {
+		totalFees += tx.Fee
+	}
+
+	// Create coinbase transaction paying the pool's address
+	coinbaseAddr := work.Address
+	if coinbaseAddr == "" {
+		coinbaseAddr = pw.address // fallback to worker address
+	}
+	coinbase := &Transaction{
+		From:      "SYSTEM",
+		To:        coinbaseAddr,
+		Amount:    work.Template.Reward + totalFees,
+		Timestamp: time.Now().Unix(),
+		Signature: fmt.Sprintf("coinbase-%d-%d", work.Template.Index, time.Now().UnixNano()),
+	}
+
+	// Build transaction list: coinbase first, then pending transactions
+	txs := make([]*Transaction, 0, 1+len(work.Transactions))
+	txs = append(txs, coinbase)
+	txs = append(txs, work.Transactions...)
+
+	// Build block from template with proper coinbase
 	block := &Block{
 		Index:          work.Template.Index,
 		Timestamp:      time.Now().Unix(),
-		Transactions:   work.Transactions,
+		Transactions:   txs,
 		PreviousHash:   work.Template.PreviousHash,
 		Difficulty:     work.Template.Difficulty,
 		DifficultyBits: work.Template.DifficultyBits,
