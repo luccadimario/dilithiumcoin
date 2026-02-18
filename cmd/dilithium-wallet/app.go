@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-const WalletAppVersion = "4.0.1"
+const WalletAppVersion = "4.0.5"
 
 // Default paths
 var (
@@ -172,7 +172,7 @@ func (a *App) GetBalance() BalanceInfo {
 }
 
 // SendTransaction signs and submits a transaction
-func (a *App) SendTransaction(to string, amountDLT string) TxResult {
+func (a *App) SendTransaction(to string, amountDLT string, feeDLT string) TxResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -180,7 +180,7 @@ func (a *App) SendTransaction(to string, amountDLT string) TxResult {
 		return TxResult{Success: false, Message: "wallet is locked"}
 	}
 
-	return a.api.sendTransaction(a.wallet, to, amountDLT)
+	return a.api.sendTransaction(a.wallet, to, amountDLT, feeDLT)
 }
 
 // GetTransactionHistory gets transaction history from the node

@@ -4,9 +4,14 @@
 
   let recipient = ''
   let amount = ''
+  let fee = '0.0001'
   let step = 'form' // 'form', 'confirm', 'result'
   let sending = false
   let result = null
+
+  const MIN_FEE = 0.0001
+  $: feeValue = parseFloat(fee) || 0
+  $: feeInvalid = fee !== '' && feeValue < MIN_FEE
 
   function review() {
     if (!recipient || recipient.length < 10) {
@@ -17,13 +22,17 @@
       showToast('Please enter a valid amount', 'error')
       return
     }
+    if (feeInvalid || fee === '') {
+      showToast('Minimum transaction fee is 0.0001 DLT', 'error')
+      return
+    }
     step = 'confirm'
   }
 
   async function send() {
     sending = true
     try {
-      result = await window.go.main.App.SendTransaction(recipient, amount)
+      result = await window.go.main.App.SendTransaction(recipient, amount, fee)
       step = 'result'
       if (result.success) {
         showToast('Transaction sent!', 'success')
@@ -40,6 +49,7 @@
   function reset() {
     recipient = ''
     amount = ''
+    fee = '0.0001'
     step = 'form'
     result = null
   }
@@ -73,7 +83,24 @@
         />
       </div>
 
-      <button class="btn btn-primary" on:click={review}>
+      <div class="form-group">
+        <label for="fee">
+          Transaction Fee (DLT)
+          <span class="fee-min">Min: 0.0001 DLT</span>
+        </label>
+        <input
+          id="fee"
+          type="text"
+          bind:value={fee}
+          placeholder="0.0001"
+          class:invalid={feeInvalid}
+        />
+        {#if feeInvalid}
+          <div class="field-error">Minimum fee is 0.0001 DLT</div>
+        {/if}
+      </div>
+
+      <button class="btn btn-primary" on:click={review} disabled={feeInvalid}>
         Review Transaction
       </button>
     </div>
@@ -90,6 +117,16 @@
       <div class="confirm-detail">
         <span class="detail-label">Amount</span>
         <span class="detail-value">{amount} DLT</span>
+      </div>
+
+      <div class="confirm-detail">
+        <span class="detail-label">Fee</span>
+        <span class="detail-value">{fee} DLT</span>
+      </div>
+
+      <div class="confirm-detail total">
+        <span class="detail-label">Total</span>
+        <span class="detail-value">{(parseFloat(amount || '0') + parseFloat(fee || '0')).toFixed(8)} DLT</span>
       </div>
 
       <div class="button-row">
@@ -173,6 +210,27 @@
     border-color: #6366f1;
   }
 
+  .form-group input.invalid {
+    border-color: #ef4444;
+  }
+
+  .form-group input.invalid:focus {
+    border-color: #ef4444;
+  }
+
+  .field-error {
+    color: #ef4444;
+    font-size: 11px;
+    margin-top: 6px;
+  }
+
+  .fee-min {
+    text-transform: none;
+    letter-spacing: 0;
+    color: #6b7280;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
   .btn {
     padding: 12px 24px;
     border-radius: 8px;
@@ -235,6 +293,16 @@
   .mono {
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 12px;
+  }
+
+  .confirm-detail.total {
+    border-bottom: none;
+    font-weight: 600;
+  }
+
+  .confirm-detail.total .detail-label,
+  .confirm-detail.total .detail-value {
+    color: #e1e4ea;
   }
 
   .button-row {

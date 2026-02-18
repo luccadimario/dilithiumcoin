@@ -300,12 +300,17 @@ func (api *apiService) getBalance(address string) BalanceInfo {
 }
 
 // sendTransaction signs and submits a transaction to the node
-func (api *apiService) sendTransaction(ws *walletService, to string, amountDLT string) TxResult {
+func (api *apiService) sendTransaction(ws *walletService, to string, amountDLT string, feeDLT string) TxResult {
 	if ws.privateKey == nil {
 		return TxResult{Success: false, Message: "wallet is locked"}
 	}
 
 	amount, err := parseDLT(amountDLT)
+	if err != nil {
+		return TxResult{Success: false, Message: err.Error()}
+	}
+
+	fee, err := parseDLTFee(feeDLT)
 	if err != nil {
 		return TxResult{Success: false, Message: err.Error()}
 	}
@@ -316,9 +321,6 @@ func (api *apiService) sendTransaction(ws *walletService, to string, amountDLT s
 	pk := ws.privateKey.Public().(*mode3.PublicKey)
 	pubKeyBytes, _ := pk.MarshalBinary()
 	publicKeyHex := hex.EncodeToString(pubKeyBytes)
-
-	// Default fee: 0.0001 DLT = 10000 base units
-	var fee int64 = 10000
 
 	// Create and sign transaction (includes fee in signing data)
 	timestamp := time.Now().Unix()
@@ -474,4 +476,23 @@ func parseDLT(s string) (int64, error) {
 		return 0, fmt.Errorf("amount must be positive")
 	}
 	return int64(math.Round(f * float64(DLTUnit))), nil
+}
+
+func parseDLTFee(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 10000, nil // default: 0.0001 DLT
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid fee: %s", s)
+	}
+	if f < 0 {
+		return 0, fmt.Errorf("fee cannot be negative")
+	}
+	fee := int64(math.Round(f * float64(DLTUnit)))
+	if fee < 10000 {
+		return 0, fmt.Errorf("minimum fee is 0.0001 DLT")
+	}
+	return fee, nil
 }

@@ -50,8 +50,8 @@ export function LockWallet() {
   return window['go']['main']['App']['LockWallet']();
 }
 
-export function SendTransaction(arg1, arg2) {
-  return window['go']['main']['App']['SendTransaction'](arg1, arg2);
+export function SendTransaction(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendTransaction'](arg1, arg2, arg3);
 }
 
 export function SetNodeURL(arg1) {

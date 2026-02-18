@@ -26,7 +26,7 @@ export function LoadWallet(arg1:string):Promise<main.WalletInfo>;
 
 export function LockWallet():Promise<void>;
 
-export function SendTransaction(arg1:string,arg2:string):Promise<main.TxResult>;
+export function SendTransaction(arg1:string,arg2:string,arg3:string):Promise<main.TxResult>;
 
 export function SetNodeURL(arg1:string):Promise<void>;
 
