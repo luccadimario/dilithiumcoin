@@ -171,7 +171,7 @@
         </div>
         <label class="confirm-check">
           <input type="checkbox" bind:checked={mnemonicConfirmed} />
-          I have written down my recovery phrase
+          I have saved my recovery phrase
         </label>
         <button
           class="btn btn-primary"
