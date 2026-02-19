@@ -1,6 +1,6 @@
 # Dilithium: A Post-Quantum Proof-of-Work Cryptocurrency
 
-**Version 1.0 — February 2025**
+**Version 1.0 — February 2026**
 
 ## Abstract
 
