@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"runtime"
@@ -250,6 +251,33 @@ func (m *Miner) miningLoop() {
 	}
 }
 
+// computeMerkleRoot computes the Merkle root of a transaction list (Bitcoin-style).
+func computeMerkleRoot(txs []*Transaction) string {
+	if len(txs) == 0 {
+		h := sha256.Sum256([]byte{})
+		return hex.EncodeToString(h[:])
+	}
+	hashes := make([][]byte, len(txs))
+	for i, tx := range txs {
+		txJSON, _ := json.Marshal(tx)
+		h := sha256.Sum256(txJSON)
+		hashes[i] = h[:]
+	}
+	for len(hashes) > 1 {
+		if len(hashes)%2 != 0 {
+			hashes = append(hashes, hashes[len(hashes)-1])
+		}
+		var next [][]byte
+		for i := 0; i < len(hashes); i += 2 {
+			combined := append(hashes[i], hashes[i+1]...)
+			h := sha256.Sum256(combined)
+			next = append(next, h[:])
+		}
+		hashes = next
+	}
+	return hex.EncodeToString(hashes[0])
+}
+
 // constructBlock builds a block with coinbase + pending transactions, ready for mining.
 func (m *Miner) constructBlock(template *BlockTemplate, pendingTxs []*Transaction) *Block {
 	// Sum fees from pending transactions
@@ -274,6 +302,7 @@ func (m *Miner) constructBlock(template *BlockTemplate, pendingTxs []*Transactio
 		Index:          template.Index,
 		Timestamp:      time.Now().Unix(),
 		Transactions:   txs,
+		MerkleRoot:     computeMerkleRoot(txs),
 		PreviousHash:   template.PreviousHash,
 		Difficulty:     template.Difficulty,
 		DifficultyBits: template.DifficultyBits,
@@ -281,14 +310,20 @@ func (m *Miner) constructBlock(template *BlockTemplate, pendingTxs []*Transactio
 }
 
 // buildHashInput computes the fixed prefix and suffix for hash computation.
-// Block hash = SHA256(Index + Timestamp + txJSON + PreviousHash + Nonce + Difficulty)
+// Block hash = SHA256(Index + Timestamp + txData + PreviousHash + Nonce + Difficulty)
 // prefix = everything before Nonce, suffix = everything after Nonce.
 func (m *Miner) buildHashInput(block *Block) (prefix, suffix []byte) {
-	txJSON, _ := json.Marshal(block.Transactions)
+	var txData string
+	if block.Index >= MerkleRootForkHeight {
+		txData = block.MerkleRoot
+	} else {
+		txJSON, _ := json.Marshal(block.Transactions)
+		txData = string(txJSON)
+	}
 
 	prefixStr := strconv.FormatInt(block.Index, 10) +
 		strconv.FormatInt(block.Timestamp, 10) +
-		string(txJSON) +
+		txData +
 		block.PreviousHash
 
 	suffixStr := strconv.Itoa(block.Difficulty)
@@ -299,10 +334,16 @@ func (m *Miner) buildHashInput(block *Block) (prefix, suffix []byte) {
 // calculateBlockHashGo computes the block hash using the same method as the node.
 // Used only for verification — not in the hot loop.
 func (m *Miner) calculateBlockHashGo(block *Block) string {
-	txJSON, _ := json.Marshal(block.Transactions)
+	var txData string
+	if block.Index >= MerkleRootForkHeight {
+		txData = block.MerkleRoot
+	} else {
+		txJSON, _ := json.Marshal(block.Transactions)
+		txData = string(txJSON)
+	}
 	blockData := strconv.FormatInt(block.Index, 10) +
 		strconv.FormatInt(block.Timestamp, 10) +
-		string(txJSON) +
+		txData +
 		block.PreviousHash +
 		strconv.FormatInt(block.Nonce, 10) +
 		strconv.Itoa(block.Difficulty)

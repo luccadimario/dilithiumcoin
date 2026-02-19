@@ -2,7 +2,11 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::time::Duration;
+
+/// Block height at which hashes switch from JSON(Transactions) to MerkleRoot.
+pub const MERKLE_ROOT_FORK_HEIGHT: i64 = 6000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
@@ -28,6 +32,8 @@ pub struct Block {
     #[serde(rename = "Timestamp")]
     pub timestamp: i64,
     pub transactions: Vec<Transaction>,
+    #[serde(rename = "MerkleRoot", skip_serializing_if = "Option::is_none")]
+    pub merkle_root: Option<String>,
     #[serde(rename = "PreviousHash")]
     pub previous_hash: String,
     #[serde(rename = "Hash")]
@@ -38,6 +44,39 @@ pub struct Block {
     pub difficulty: i32,
     #[serde(rename = "DifficultyBits", skip_serializing_if = "Option::is_none")]
     pub difficulty_bits: Option<i32>,
+}
+
+/// Compute the Merkle root of a transaction list (Bitcoin-style binary tree).
+pub fn compute_merkle_root(transactions: &[Transaction]) -> String {
+    if transactions.is_empty() {
+        let hash = Sha256::digest(b"");
+        return hex::encode(hash);
+    }
+
+    let mut hashes: Vec<Vec<u8>> = transactions
+        .iter()
+        .map(|tx| {
+            let tx_json = serde_json::to_string(tx).unwrap();
+            let hash = Sha256::digest(tx_json.as_bytes());
+            hash.to_vec()
+        })
+        .collect();
+
+    while hashes.len() > 1 {
+        if hashes.len() % 2 != 0 {
+            hashes.push(hashes.last().unwrap().clone());
+        }
+        let mut next = Vec::new();
+        for pair in hashes.chunks(2) {
+            let mut combined = pair[0].clone();
+            combined.extend_from_slice(&pair[1]);
+            let hash = Sha256::digest(&combined);
+            next.push(hash.to_vec());
+        }
+        hashes = next;
+    }
+
+    hex::encode(&hashes[0])
 }
 
 #[derive(Debug, Clone, Deserialize)]

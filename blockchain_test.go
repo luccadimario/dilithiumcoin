@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"testing"
 )
@@ -239,6 +241,350 @@ func TestMiningIntegration(t *testing.T) {
 	minerActual := bc.GetBalance(miner.Address)
 	if minerActual != minerExpected {
 		t.Fatalf("miner balance = %d, want %d", minerActual, minerExpected)
+	}
+}
+
+func TestComputeMerkleRoot(t *testing.T) {
+	t.Parallel()
+
+	// Empty transactions => SHA-256("")
+	emptyRoot := ComputeMerkleRoot([]*Transaction{})
+	expectedEmpty := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if emptyRoot != expectedEmpty {
+		t.Fatalf("empty merkle root = %s, want %s", emptyRoot, expectedEmpty)
+	}
+
+	// Single transaction => SHA-256(JSON(tx))
+	tx1 := &Transaction{
+		From:      "SYSTEM",
+		To:        "miner",
+		Amount:    100,
+		Timestamp: 1000,
+		Signature: "sig1",
+	}
+	root1 := ComputeMerkleRoot([]*Transaction{tx1})
+	if len(root1) != 64 {
+		t.Fatalf("merkle root length = %d, want 64", len(root1))
+	}
+
+	// Two transactions => deterministic
+	tx2 := &Transaction{
+		From:      "alice",
+		To:        "bob",
+		Amount:    50,
+		Timestamp: 2000,
+		Signature: "sig2",
+	}
+	root2a := ComputeMerkleRoot([]*Transaction{tx1, tx2})
+	root2b := ComputeMerkleRoot([]*Transaction{tx1, tx2})
+	if root2a != root2b {
+		t.Fatalf("merkle root not deterministic: %s vs %s", root2a, root2b)
+	}
+
+	// Different order => different root
+	root2c := ComputeMerkleRoot([]*Transaction{tx2, tx1})
+	if root2a == root2c {
+		t.Fatal("merkle root should differ for different transaction order")
+	}
+
+	// Single tx != two tx
+	if root1 == root2a {
+		t.Fatal("single-tx root should differ from two-tx root")
+	}
+}
+
+func TestCalculateHashForkTransition(t *testing.T) {
+	t.Parallel()
+
+	txs := []*Transaction{
+		{From: "SYSTEM", To: "miner", Amount: 100, Timestamp: 1000, Signature: "sig1"},
+	}
+	merkleRoot := ComputeMerkleRoot(txs)
+
+	// Block below fork height — uses legacy JSON serialization
+	preForkBlock := &Block{
+		Index:        MerkleRootForkHeight - 1,
+		Timestamp:    1000,
+		Transactions: txs,
+		MerkleRoot:   merkleRoot,
+		PreviousHash: "abc",
+		Nonce:        0,
+		Difficulty:   2,
+	}
+
+	// Block at fork height — uses MerkleRoot
+	postForkBlock := &Block{
+		Index:        MerkleRootForkHeight,
+		Timestamp:    1000,
+		Transactions: txs,
+		MerkleRoot:   merkleRoot,
+		PreviousHash: "abc",
+		Nonce:        0,
+		Difficulty:   2,
+	}
+
+	preForkHash := preForkBlock.CalculateHash()
+	postForkHash := postForkBlock.CalculateHash()
+
+	// The hashes must differ because the txData in the hash input changes
+	if preForkHash == postForkHash {
+		t.Fatalf("pre-fork and post-fork hashes should differ, both = %s", preForkHash)
+	}
+
+	// Both should be deterministic
+	if preForkBlock.CalculateHash() != preForkHash {
+		t.Fatal("pre-fork hash not deterministic")
+	}
+	if postForkBlock.CalculateHash() != postForkHash {
+		t.Fatal("post-fork hash not deterministic")
+	}
+}
+
+func TestMerkleRootWithMultipleTransactions(t *testing.T) {
+	t.Parallel()
+
+	// Build a block with coinbase + 3 user transactions
+	coinbase := &Transaction{
+		From: "SYSTEM", To: "miner_addr", Amount: 5000000000,
+		Timestamp: 1000, Signature: "coinbase-test",
+	}
+	tx1 := &Transaction{
+		From: "alice", To: "bob", Amount: 100, Fee: 10000,
+		Timestamp: 1001, Signature: "sig1", PublicKey: "pk1",
+	}
+	tx2 := &Transaction{
+		From: "bob", To: "charlie", Amount: 50, Fee: 10000,
+		Timestamp: 1002, Signature: "sig2", PublicKey: "pk2",
+	}
+	tx3 := &Transaction{
+		From: "charlie", To: "dave", Amount: 25, Fee: 10000,
+		Timestamp: 1003, Signature: "sig3", PublicKey: "pk3",
+	}
+	txs := []*Transaction{coinbase, tx1, tx2, tx3}
+
+	// Compute Merkle root
+	root := ComputeMerkleRoot(txs)
+	if len(root) != 64 {
+		t.Fatalf("merkle root length = %d, want 64", len(root))
+	}
+
+	// Deterministic
+	if ComputeMerkleRoot(txs) != root {
+		t.Fatal("merkle root not deterministic with 4 txs")
+	}
+
+	// Build post-fork block and verify hash uses MerkleRoot, not JSON
+	block := &Block{
+		Index:        MerkleRootForkHeight,
+		Timestamp:    1000,
+		Transactions: txs,
+		MerkleRoot:   root,
+		PreviousHash: "prev",
+		Nonce:        42,
+		Difficulty:   2,
+	}
+	postForkHash := block.CalculateHash()
+
+	// Manually compute what the hash should be (using MerkleRoot)
+	expectedData := fmt.Sprintf("%d%d%s%s%d%d",
+		block.Index, block.Timestamp, root, block.PreviousHash, block.Nonce, block.Difficulty)
+	expectedHash := fmt.Sprintf("%x", sha256.Sum256([]byte(expectedData)))
+	if postForkHash != expectedHash {
+		t.Fatalf("post-fork hash mismatch:\n  got:  %s\n  want: %s", postForkHash, expectedHash)
+	}
+
+	// Same block as pre-fork should produce a DIFFERENT hash (using JSON)
+	block.Index = MerkleRootForkHeight - 1
+	preForkHash := block.CalculateHash()
+	if preForkHash == postForkHash {
+		t.Fatal("pre-fork and post-fork hashes should differ with multi-tx block")
+	}
+
+	// Verify pre-fork used JSON
+	txJSON, _ := json.Marshal(txs)
+	expectedPreData := fmt.Sprintf("%d%d%s%s%d%d",
+		block.Index, block.Timestamp, string(txJSON), block.PreviousHash, block.Nonce, block.Difficulty)
+	expectedPreHash := fmt.Sprintf("%x", sha256.Sum256([]byte(expectedPreData)))
+	if preForkHash != expectedPreHash {
+		t.Fatalf("pre-fork hash mismatch:\n  got:  %s\n  want: %s", preForkHash, expectedPreHash)
+	}
+}
+
+func TestMerkleRootOddTransactionCount(t *testing.T) {
+	t.Parallel()
+
+	// 3 transactions (odd) — tests the duplicate-last-leaf logic
+	txs := []*Transaction{
+		{From: "SYSTEM", To: "miner", Amount: 100, Timestamp: 1, Signature: "s1"},
+		{From: "a", To: "b", Amount: 50, Timestamp: 2, Signature: "s2"},
+		{From: "c", To: "d", Amount: 25, Timestamp: 3, Signature: "s3"},
+	}
+
+	root3 := ComputeMerkleRoot(txs)
+	if len(root3) != 64 {
+		t.Fatalf("odd-count merkle root length = %d, want 64", len(root3))
+	}
+
+	// Adding a 4th tx should change the root
+	txs4 := append(txs, &Transaction{From: "e", To: "f", Amount: 10, Timestamp: 4, Signature: "s4"})
+	root4 := ComputeMerkleRoot(txs4)
+	if root3 == root4 {
+		t.Fatal("3-tx and 4-tx merkle roots should differ")
+	}
+}
+
+// TestMerkleRootForkWithRealTransactions creates wallets, signs real transactions,
+// and verifies that blocks containing them validate correctly both before and after
+// the fork height. This exercises the full signing → merkle root → hash → validate path.
+func TestMerkleRootForkWithRealTransactions(t *testing.T) {
+	// Override fork height to a low value so the test doesn't need to mine 6000 blocks.
+	// Not parallel because we mutate the global MerkleRootForkHeight.
+	origForkHeight := MerkleRootForkHeight
+	MerkleRootForkHeight = 5
+	defer func() { MerkleRootForkHeight = origForkHeight }()
+
+	// Create wallets
+	minerWallet, _ := NewWallet()
+	alice, _ := NewWallet()
+	bob, _ := NewWallet()
+
+	bc := NewBlockchain(1) // difficulty 1 for fast mining
+
+	// Mine blocks up to fork height - 2 so the miner has funds
+	for i := int64(1); i < MerkleRootForkHeight-1; i++ {
+		block := bc.MinePendingTransactions(minerWallet.Address)
+		if block == nil {
+			t.Fatalf("failed to mine block %d", i)
+		}
+	}
+
+	currentHeight := bc.GetBlockCount()
+	t.Logf("Pre-funded chain height: %d (fork at %d)", currentHeight, MerkleRootForkHeight)
+
+	// Verify miner has funds
+	minerBalance := bc.GetBalance(minerWallet.Address)
+	t.Logf("Miner balance: %s DLT", FormatDLT(minerBalance))
+	if minerBalance <= 0 {
+		t.Fatalf("miner should have balance, got %d", minerBalance)
+	}
+
+	// ---- PRE-FORK BLOCK WITH REAL TRANSACTION ----
+	// This should be the last pre-fork block (height = MerkleRootForkHeight - 1)
+
+	sendAmount := int64(10 * DLTUnit)
+	fee := MinTransactionFee
+
+	tx1 := NewTransaction(minerWallet.Address, alice.Address, sendAmount, fee)
+	if err := tx1.Sign(minerWallet); err != nil {
+		t.Fatalf("Sign tx1 error: %v", err)
+	}
+	if err := bc.AddTransaction(tx1); err != nil {
+		t.Fatalf("AddTransaction tx1 error: %v", err)
+	}
+
+	preForkBlock := bc.MinePendingTransactions(minerWallet.Address)
+	if preForkBlock == nil {
+		t.Fatal("failed to mine pre-fork block with transaction")
+	}
+
+	t.Logf("Pre-fork block %d: %d txs, MerkleRoot=%s, Hash=%s",
+		preForkBlock.Index, len(preForkBlock.Transactions),
+		preForkBlock.MerkleRoot[:16], preForkBlock.Hash[:16])
+
+	// Verify this block IS pre-fork
+	if preForkBlock.Index >= MerkleRootForkHeight {
+		t.Fatalf("expected pre-fork block, got index %d (fork at %d)",
+			preForkBlock.Index, MerkleRootForkHeight)
+	}
+
+	// Verify hash was computed using JSON(Transactions), not MerkleRoot
+	txJSON, _ := json.Marshal(preForkBlock.Transactions)
+	preForkData := fmt.Sprintf("%d%d%s%s%d%d",
+		preForkBlock.Index, preForkBlock.Timestamp,
+		string(txJSON), preForkBlock.PreviousHash,
+		preForkBlock.Nonce, preForkBlock.Difficulty)
+	expectedPreHash := fmt.Sprintf("%x", sha256.Sum256([]byte(preForkData)))
+	if preForkBlock.Hash != expectedPreHash {
+		t.Fatalf("pre-fork block hash does not match JSON-based computation")
+	}
+
+	// ---- POST-FORK BLOCK WITH REAL TRANSACTION ----
+	// This is the first post-fork block (height = MerkleRootForkHeight)
+
+	tx2 := NewTransaction(minerWallet.Address, bob.Address, sendAmount, fee)
+	if err := tx2.Sign(minerWallet); err != nil {
+		t.Fatalf("Sign tx2 error: %v", err)
+	}
+	if err := bc.AddTransaction(tx2); err != nil {
+		t.Fatalf("AddTransaction tx2 error: %v", err)
+	}
+
+	postForkBlock := bc.MinePendingTransactions(minerWallet.Address)
+	if postForkBlock == nil {
+		t.Fatal("failed to mine post-fork block with transaction")
+	}
+
+	t.Logf("Post-fork block %d: %d txs, MerkleRoot=%s, Hash=%s",
+		postForkBlock.Index, len(postForkBlock.Transactions),
+		postForkBlock.MerkleRoot[:16], postForkBlock.Hash[:16])
+
+	// Verify this block IS post-fork
+	if postForkBlock.Index < MerkleRootForkHeight {
+		t.Fatalf("expected post-fork block, got index %d (fork at %d)",
+			postForkBlock.Index, MerkleRootForkHeight)
+	}
+
+	// Verify hash was computed using MerkleRoot, not JSON
+	postForkData := fmt.Sprintf("%d%d%s%s%d%d",
+		postForkBlock.Index, postForkBlock.Timestamp,
+		postForkBlock.MerkleRoot, postForkBlock.PreviousHash,
+		postForkBlock.Nonce, postForkBlock.Difficulty)
+	expectedPostHash := fmt.Sprintf("%x", sha256.Sum256([]byte(postForkData)))
+	if postForkBlock.Hash != expectedPostHash {
+		t.Fatalf("post-fork block hash does not match MerkleRoot-based computation")
+	}
+
+	// Verify MerkleRoot was populated correctly
+	expectedMerkle := ComputeMerkleRoot(postForkBlock.Transactions)
+	if postForkBlock.MerkleRoot != expectedMerkle {
+		t.Fatalf("post-fork MerkleRoot mismatch:\n  block:    %s\n  computed: %s",
+			postForkBlock.MerkleRoot, expectedMerkle)
+	}
+
+	// ---- MINE A FEW MORE POST-FORK BLOCKS WITH TRANSACTIONS ----
+	for i := 0; i < 3; i++ {
+		tx := NewTransaction(minerWallet.Address, alice.Address, int64(DLTUnit), fee)
+		if err := tx.Sign(minerWallet); err != nil {
+			t.Fatalf("Sign tx error (round %d): %v", i, err)
+		}
+		if err := bc.AddTransaction(tx); err != nil {
+			t.Fatalf("AddTransaction error (round %d): %v", i, err)
+		}
+		block := bc.MinePendingTransactions(minerWallet.Address)
+		if block == nil {
+			t.Fatalf("failed to mine post-fork block %d", i)
+		}
+		t.Logf("Post-fork block %d: %d txs, MerkleRoot=%s",
+			block.Index, len(block.Transactions), block.MerkleRoot[:16])
+	}
+
+	// ---- VALIDATE ENTIRE CHAIN ----
+	if !bc.IsValid() {
+		t.Fatal("chain should be valid after mining across fork with transactions")
+	}
+
+	// Check balances are correct
+	aliceBalance := bc.GetBalance(alice.Address)
+	bobBalance := bc.GetBalance(bob.Address)
+	t.Logf("Final balances: Alice=%s, Bob=%s, Miner=%s",
+		FormatDLT(aliceBalance), FormatDLT(bobBalance), FormatDLT(bc.GetBalance(minerWallet.Address)))
+
+	expectedAlice := sendAmount + 3*DLTUnit // 10 DLT + 3*1 DLT
+	if aliceBalance != expectedAlice {
+		t.Fatalf("alice balance = %d, want %d", aliceBalance, expectedAlice)
+	}
+	if bobBalance != sendAmount {
+		t.Fatalf("bob balance = %d, want %d", bobBalance, sendAmount)
 	}
 }
 

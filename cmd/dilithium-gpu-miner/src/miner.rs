@@ -1,7 +1,7 @@
 // Mining coordinator
 
 use crate::backend::{self, GpuBackend};
-use crate::network::{Block, BlockTemplate, NodeClient, Transaction};
+use crate::network::{Block, BlockTemplate, NodeClient, Transaction, compute_merkle_root, MERKLE_ROOT_FORK_HEIGHT};
 use crate::sha256::sha256_midstate;
 use crate::webui::MinerStats;
 use crate::worker::GpuWorker;
@@ -267,6 +267,8 @@ impl Miner {
         let mut txs = vec![coinbase];
         txs.extend(pending_txs);
 
+        let merkle_root = compute_merkle_root(&txs);
+
         Block {
             index: template.index,
             timestamp: std::time::SystemTime::now()
@@ -274,6 +276,7 @@ impl Miner {
                 .unwrap()
                 .as_secs() as i64,
             transactions: txs,
+            merkle_root: Some(merkle_root),
             previous_hash: template.previous_hash.clone(),
             hash: String::new(),
             nonce: 0,
@@ -417,11 +420,15 @@ impl Miner {
     }
 
     fn build_hash_input(&self, block: &Block) -> (Vec<u8>, Vec<u8>) {
-        let tx_json = serde_json::to_string(&block.transactions).unwrap();
+        let tx_data = if block.index >= MERKLE_ROOT_FORK_HEIGHT {
+            block.merkle_root.clone().unwrap_or_default()
+        } else {
+            serde_json::to_string(&block.transactions).unwrap()
+        };
 
         let prefix = format!(
             "{}{}{}{}",
-            block.index, block.timestamp, tx_json, block.previous_hash
+            block.index, block.timestamp, tx_data, block.previous_hash
         );
 
         let suffix = format!("{}", block.difficulty);

@@ -280,6 +280,7 @@ func (pw *PoolWorker) mineAndSubmitShares(ctx context.Context, work *PoolWorkMes
 		Index:          work.Template.Index,
 		Timestamp:      time.Now().Unix(),
 		Transactions:   txs,
+		MerkleRoot:     computeMerkleRoot(txs),
 		PreviousHash:   work.Template.PreviousHash,
 		Difficulty:     work.Template.Difficulty,
 		DifficultyBits: work.Template.DifficultyBits,
@@ -357,11 +358,17 @@ func (pw *PoolWorker) mineAndSubmitShares(ctx context.Context, work *PoolWorkMes
 
 // buildHashInput is the same as in miner.go
 func (pw *PoolWorker) buildHashInput(block *Block) (prefix, suffix []byte) {
-	txJSON, _ := json.Marshal(block.Transactions)
+	var txData string
+	if block.Index >= MerkleRootForkHeight {
+		txData = block.MerkleRoot
+	} else {
+		txJSON, _ := json.Marshal(block.Transactions)
+		txData = string(txJSON)
+	}
 
 	prefixStr := strconv.FormatInt(block.Index, 10) +
 		strconv.FormatInt(block.Timestamp, 10) +
-		string(txJSON) +
+		txData +
 		block.PreviousHash
 
 	suffixStr := strconv.Itoa(block.Difficulty)

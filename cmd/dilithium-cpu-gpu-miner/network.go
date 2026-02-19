@@ -44,11 +44,15 @@ type Transaction struct {
 	PublicKey string `json:"public_key,omitempty"`
 }
 
+// MerkleRootForkHeight is the block at which hashes switch to using a Merkle root.
+const MerkleRootForkHeight = 6000
+
 // Block represents a mined block for submission to the node.
 type Block struct {
 	Index          int64          `json:"Index"`
 	Timestamp      int64          `json:"Timestamp"`
 	Transactions   []*Transaction `json:"transactions"`
+	MerkleRoot     string         `json:"MerkleRoot,omitempty"`
 	PreviousHash   string         `json:"PreviousHash"`
 	Hash           string         `json:"Hash"`
 	Nonce          int64          `json:"Nonce"`

@@ -89,11 +89,15 @@ type Transaction struct {
 	PublicKey string `json:"public_key,omitempty"`
 }
 
+// MerkleRootForkHeight is the block at which hashes switch to using a Merkle root.
+const MerkleRootForkHeight = 6000
+
 // Block represents a mined block to submit
 type Block struct {
 	Index          int64          `json:"Index"`
 	Timestamp      int64          `json:"Timestamp"`
 	Transactions   []*Transaction `json:"transactions"`
+	MerkleRoot     string         `json:"MerkleRoot,omitempty"`
 	PreviousHash   string         `json:"PreviousHash"`
 	Hash           string         `json:"Hash"`
 	Nonce          int64          `json:"Nonce"`
@@ -309,6 +313,7 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 		Index:          template.Index,
 		Timestamp:      time.Now().Unix(),
 		Transactions:   txs,
+		MerkleRoot:     computeMerkleRoot(txs),
 		PreviousHash:   template.PreviousHash,
 		Difficulty:     template.Difficulty,
 		DifficultyBits: template.DifficultyBits,
@@ -343,6 +348,7 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 				Index:          baseBlock.Index,
 				Timestamp:      baseBlock.Timestamp,
 				Transactions:   baseBlock.Transactions,
+				MerkleRoot:     baseBlock.MerkleRoot,
 				PreviousHash:   baseBlock.PreviousHash,
 				Difficulty:     baseBlock.Difficulty,
 				DifficultyBits: baseBlock.DifficultyBits,
@@ -464,14 +470,47 @@ func (m *Miner) chainAdvanced(templateHeight int64) bool {
 	return currentHeight > templateHeight
 }
 
+// computeMerkleRoot computes the Merkle root of a transaction list (Bitcoin-style).
+func computeMerkleRoot(txs []*Transaction) string {
+	if len(txs) == 0 {
+		h := sha256.Sum256([]byte{})
+		return hex.EncodeToString(h[:])
+	}
+	hashes := make([][]byte, len(txs))
+	for i, tx := range txs {
+		txJSON, _ := json.Marshal(tx)
+		h := sha256.Sum256(txJSON)
+		hashes[i] = h[:]
+	}
+	for len(hashes) > 1 {
+		if len(hashes)%2 != 0 {
+			hashes = append(hashes, hashes[len(hashes)-1])
+		}
+		var next [][]byte
+		for i := 0; i < len(hashes); i += 2 {
+			combined := append(hashes[i], hashes[i+1]...)
+			h := sha256.Sum256(combined)
+			next = append(next, h[:])
+		}
+		hashes = next
+	}
+	return hex.EncodeToString(hashes[0])
+}
+
 // calculateBlockHash computes the SHA-256 hash of a block
 // Must match the node's Block.CalculateHash() exactly
 func calculateBlockHash(block *Block) string {
-	txJSON, _ := json.Marshal(block.Transactions)
+	var txData string
+	if block.Index >= MerkleRootForkHeight {
+		txData = block.MerkleRoot
+	} else {
+		txJSON, _ := json.Marshal(block.Transactions)
+		txData = string(txJSON)
+	}
 
 	blockData := strconv.FormatInt(block.Index, 10) +
 		strconv.FormatInt(block.Timestamp, 10) +
-		string(txJSON) +
+		txData +
 		block.PreviousHash +
 		strconv.FormatInt(block.Nonce, 10) +
 		strconv.Itoa(block.Difficulty)

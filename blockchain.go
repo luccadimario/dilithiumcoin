@@ -13,6 +13,12 @@ import (
 	"github.com/cloudflare/circl/sign/dilithium/mode3"
 )
 
+// MerkleRootForkHeight is the block height at which block hashes switch from
+// including JSON(Transactions) to using a Merkle root. This is a consensus-
+// breaking hard fork: all nodes must upgrade before this height.
+// This is a var (not const) so that tests can override it.
+var MerkleRootForkHeight int64 = 6000
+
 // Difficulty adjustment constants
 const (
 	// BlocksPerAdjustment is how often difficulty adjusts (legacy, kept for compatibility)
@@ -89,20 +95,62 @@ type Block struct {
 	Index          int64
 	Timestamp      int64
 	Transactions   []*Transaction `json:"transactions"`
+	MerkleRoot     string         `json:"MerkleRoot,omitempty"`
 	PreviousHash   string
 	Hash           string
 	Nonce          int64
-	Difficulty     int `json:"Difficulty"`                    // Leading zero hex digits (backward compat)
+	Difficulty     int `json:"Difficulty"`                // Leading zero hex digits (backward compat)
 	DifficultyBits int `json:"DifficultyBits,omitempty"` // Bit-precise difficulty (soft fork)
+}
+
+// ComputeMerkleRoot computes the Merkle root of a list of transactions.
+// Uses a standard binary Merkle tree (Bitcoin-style):
+//   - Leaf = SHA-256(JSON(tx))
+//   - Odd leaves: duplicate last
+//   - Pair adjacent and SHA-256(left + right) up the tree
+//   - Empty list: SHA-256("")
+func ComputeMerkleRoot(transactions []*Transaction) string {
+	if len(transactions) == 0 {
+		h := sha256.Sum256([]byte{})
+		return hex.EncodeToString(h[:])
+	}
+
+	hashes := make([][]byte, len(transactions))
+	for i, tx := range transactions {
+		txJSON, _ := json.Marshal(tx)
+		h := sha256.Sum256(txJSON)
+		hashes[i] = h[:]
+	}
+
+	for len(hashes) > 1 {
+		if len(hashes)%2 != 0 {
+			hashes = append(hashes, hashes[len(hashes)-1])
+		}
+		var next [][]byte
+		for i := 0; i < len(hashes); i += 2 {
+			combined := append(hashes[i], hashes[i+1]...)
+			h := sha256.Sum256(combined)
+			next = append(next, h[:])
+		}
+		hashes = next
+	}
+
+	return hex.EncodeToString(hashes[0])
 }
 
 // CalculateHash creates a SHA-256 hash of the block
 func (b *Block) CalculateHash() string {
-	txJSON, _ := json.Marshal(b.Transactions)
+	var txData string
+	if b.Index >= MerkleRootForkHeight {
+		txData = b.MerkleRoot
+	} else {
+		txJSON, _ := json.Marshal(b.Transactions)
+		txData = string(txJSON)
+	}
 
 	blockData := strconv.FormatInt(b.Index, 10) +
 		strconv.FormatInt(b.Timestamp, 10) +
-		string(txJSON) +
+		txData +
 		b.PreviousHash +
 		strconv.FormatInt(b.Nonce, 10) +
 		strconv.Itoa(b.Difficulty)
@@ -354,6 +402,7 @@ func (bc *Blockchain) MinePendingTransactionsWithCancel(minerAddress string, can
 		Index:          previousBlock.Index + 1,
 		Timestamp:      time.Now().Unix(),
 		Transactions:   txToMine,
+		MerkleRoot:     ComputeMerkleRoot(txToMine),
 		PreviousHash:   previousBlock.Hash,
 		Nonce:          0,
 		Difficulty:     diffHex,

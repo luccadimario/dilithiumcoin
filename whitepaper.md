@@ -113,6 +113,7 @@ A block consists of:
 | Index | int64 | Block height (genesis = 0) |
 | Timestamp | int64 | Unix timestamp (seconds) |
 | Transactions | []*Transaction | Ordered list of transactions |
+| MerkleRoot | string | Merkle root of transactions (block 6,000+) |
 | PreviousHash | string | SHA-256 hash of the previous block |
 | Hash | string | SHA-256 hash of this block |
 | Nonce | int64 | Proof-of-work nonce |
@@ -121,16 +122,31 @@ A block consists of:
 
 ### 4.2 Block Hash
 
-The block hash is computed as:
+Beginning at block 6,000 (Merkle root hard fork), the block hash uses a Merkle root instead of the full JSON-serialized transaction list:
 
 ```
-data = str(Index) + str(Timestamp) + JSON(Transactions) + PreviousHash + str(Nonce) + str(Difficulty)
+Pre-fork  (block < 6,000):  txData = JSON(Transactions)
+Post-fork (block >= 6,000): txData = MerkleRoot
+
+data = str(Index) + str(Timestamp) + txData + PreviousHash + str(Nonce) + str(Difficulty)
 Hash = hex(SHA-256(data))
 ```
 
-All numeric fields are rendered as decimal ASCII strings. The transaction array is serialized as JSON with fields omitted when zero-valued (using Go's `omitempty` tag).
+All numeric fields are rendered as decimal ASCII strings. For pre-fork blocks, the transaction array is serialized as JSON with fields omitted when zero-valued (using Go's `omitempty` tag). For post-fork blocks, `txData` is the 64-character hex Merkle root, making block headers a fixed size regardless of transaction count.
 
-### 4.3 Validation Rules
+### 4.3 Merkle Tree
+
+The Merkle root is computed using a standard binary Merkle tree (Bitcoin-style):
+
+1. For each transaction, compute `SHA-256(JSON(tx))` to produce leaf hashes.
+2. If there is an odd number of leaves, duplicate the last one.
+3. Pair adjacent hashes and compute `SHA-256(left || right)` up the tree.
+4. The root is the final 64-character hex string.
+5. For an empty block (no transactions), the Merkle root is `SHA-256("")`.
+
+This provides O(log n) proof-of-inclusion for any transaction in a block, enabling future support for lightweight SPV clients.
+
+### 4.4 Validation Rules
 
 A block is accepted if and only if:
 
@@ -145,7 +161,7 @@ A block is accepted if and only if:
 9. Serialized block size does not exceed 1,048,576 bytes (1 MB)
 10. Transaction count does not exceed 5,000
 
-### 4.4 Genesis Block
+### 4.5 Genesis Block
 
 The genesis block was mined on February 1, 2025:
 
