@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var AppVersion = "4.1.0"
+var AppVersion = "4.1.1"
 
 const banner = `
   ██████╗ ██╗██╗     ██╗████████╗██╗  ██╗██╗██╗   ██╗███╗   ███╗
@@ -169,6 +169,7 @@ func main() {
 	fmt.Println()
 
 	miner := NewMiner(activeNodeURL, minerAddress, *threads)
+	miner.embeddedNode = nodeRunner != nil
 	miner.useGPU = *useGPU
 	miner.gpuDevice = *gpuDevice
 	miner.batchSize = *batchSize

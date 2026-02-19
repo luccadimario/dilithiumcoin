@@ -32,6 +32,9 @@ type Miner struct {
 	earnings     atomic.Int64
 	startTime    time.Time
 
+	// Node mode
+	embeddedNode bool // true when miner started its own node
+
 	// Control
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -88,26 +91,29 @@ func (m *Miner) Stop() {
 	}
 }
 
-// waitForSync blocks until the node is synced with the real network.
-// Requires: (1) at least one peer connected, (2) height > 0, (3) height stable for 10 seconds.
+// waitForSync blocks until the node is synced with the network.
+// For embedded nodes: waits for peers, height > 0, and height to stabilize.
+// For remote nodes: just waits for height > 0 (the remote node is already authoritative).
 func (m *Miner) waitForSync() {
 	fmt.Println("[*] Waiting for node to connect to peers and sync...")
 
-	// Phase 1: Wait for at least one peer
-	for {
-		select {
-		case <-m.stopCh:
-			return
-		default:
-		}
+	// Phase 1: Wait for at least one peer (embedded node only)
+	if m.embeddedNode {
+		for {
+			select {
+			case <-m.stopCh:
+				return
+			default:
+			}
 
-		peers, err := m.client.GetPeerCount()
-		if err == nil && peers > 0 {
-			fmt.Printf("[+] Connected to %d peer(s)\n", peers)
-			break
+			peers, err := m.client.GetPeerCount()
+			if err == nil && peers > 0 {
+				fmt.Printf("[+] Connected to %d peer(s)\n", peers)
+				break
+			}
+			fmt.Println("[~] No peers yet, waiting...")
+			m.sleep(3 * time.Second)
 		}
-		fmt.Println("[~] No peers yet, waiting...")
-		m.sleep(3 * time.Second)
 	}
 
 	// Phase 2: Wait for height > 0 (chain data received from peers)
