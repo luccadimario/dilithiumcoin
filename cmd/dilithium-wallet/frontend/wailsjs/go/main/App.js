@@ -6,6 +6,10 @@ export function CreateWallet(arg1) {
   return window['go']['main']['App']['CreateWallet'](arg1);
 }
 
+export function CreateWalletWithMnemonic(arg1) {
+  return window['go']['main']['App']['CreateWalletWithMnemonic'](arg1);
+}
+
 export function ExportPrivateKey() {
   return window['go']['main']['App']['ExportPrivateKey']();
 }
@@ -48,6 +52,10 @@ export function LoadWallet(arg1) {
 
 export function LockWallet() {
   return window['go']['main']['App']['LockWallet']();
+}
+
+export function RestoreFromMnemonic(arg1, arg2) {
+  return window['go']['main']['App']['RestoreFromMnemonic'](arg1, arg2);
 }
 
 export function SendTransaction(arg1, arg2, arg3) {

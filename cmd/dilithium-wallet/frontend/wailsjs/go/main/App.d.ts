@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function CreateWallet(arg1:string):Promise<main.WalletInfo>;
 
+export function CreateWalletWithMnemonic(arg1:string):Promise<main.MnemonicResult>;
+
 export function ExportPrivateKey():Promise<string>;
 
 export function GetAddress():Promise<string>;
@@ -25,6 +27,8 @@ export function IsUnlocked():Promise<boolean>;
 export function LoadWallet(arg1:string):Promise<main.WalletInfo>;
 
 export function LockWallet():Promise<void>;
+
+export function RestoreFromMnemonic(arg1:string,arg2:string):Promise<main.WalletInfo>;
 
 export function SendTransaction(arg1:string,arg2:string,arg3:string):Promise<main.TxResult>;
 

@@ -22,6 +22,24 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class MnemonicResult {
+	    mnemonic: string;
+	    address: string;
+	    encrypted: boolean;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MnemonicResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mnemonic = source["mnemonic"];
+	        this.address = source["address"];
+	        this.encrypted = source["encrypted"];
+	        this.error = source["error"];
+	    }
+	}
 	export class NodeStatus {
 	    connected: boolean;
 	    version: string;
