@@ -87,10 +87,13 @@ func handleWallet(args []string) {
 		cmdWalletInfo(args[1:])
 	case "export":
 		cmdWalletExport(args[1:])
+	case "restore":
+		cmdWalletRestore(args[1:])
 	default:
 		fmt.Printf("Unknown wallet command: %s\n", subcommand)
 		fmt.Println("\nWallet commands:")
-		fmt.Println("  wallet create    - Create new wallet")
+		fmt.Println("  wallet create    - Create new wallet (with recovery phrase)")
+		fmt.Println("  wallet restore   - Restore wallet from recovery phrase")
 		fmt.Println("  wallet info      - Show wallet information")
 		fmt.Println("  wallet export    - Export wallet keys")
 		os.Exit(1)
@@ -134,7 +137,8 @@ func printUsage() {
 	fmt.Println("  dilithium-cli <command> [options]")
 	fmt.Println()
 	fmt.Println("WALLET COMMANDS:")
-	fmt.Println("  init                      Create a new wallet (first time setup)")
+	fmt.Println("  init                      Create a new wallet with recovery phrase")
+	fmt.Println("  wallet restore            Restore wallet from recovery phrase")
 	fmt.Println("  address                   Show your wallet address")
 	fmt.Println("  balance [address]         Check balance (yours or specified address)")
 	fmt.Println()

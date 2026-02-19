@@ -23,7 +23,7 @@ const (
 	VersionMinor = 0
 
 	// VersionPatch is the patch version number
-	VersionPatch = 4
+	VersionPatch = 5
 
 	// VersionPreRelease is the pre-release identifier (empty for release)
 	VersionPreRelease = ""

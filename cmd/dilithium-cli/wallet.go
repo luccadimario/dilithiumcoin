@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/cloudflare/circl/sign/dilithium/mode3"
+	"myblockchain/pkg/mnemonic"
 )
 
 // cmdInit creates a new wallet (first-time setup)
@@ -22,6 +23,7 @@ func cmdInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	walletDir := fs.String("wallet", DefaultWalletDir, "Wallet directory")
 	force := fs.Bool("force", false, "Overwrite existing wallet")
+	legacy := fs.Bool("legacy", false, "Create wallet without mnemonic (random key)")
 	fs.Parse(args)
 
 	// Check if wallet already exists
@@ -36,11 +38,30 @@ func cmdInit(args []string) {
 	fmt.Println("Creating new quantum-safe wallet...")
 	fmt.Println()
 
-	// Generate CRYSTALS-Dilithium Mode3 key pair (192-bit quantum-safe)
-	publicKey, privateKey, err := mode3.GenerateKey(rand.Reader)
-	if err != nil {
-		fmt.Printf("Error generating key pair: %v\n", err)
-		os.Exit(1)
+	var publicKey *mode3.PublicKey
+	var privateKey *mode3.PrivateKey
+	var mnemonicPhrase string
+	var err error
+
+	if *legacy {
+		// Legacy mode: random key generation (no mnemonic)
+		publicKey, privateKey, err = mode3.GenerateKey(rand.Reader)
+		if err != nil {
+			fmt.Printf("Error generating key pair: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		// Generate BIP39 mnemonic and derive key
+		mnemonicPhrase, err = mnemonic.Generate()
+		if err != nil {
+			fmt.Printf("Error generating mnemonic: %v\n", err)
+			os.Exit(1)
+		}
+		publicKey, privateKey, err = mnemonic.GenerateKeyFromMnemonic(mnemonicPhrase)
+		if err != nil {
+			fmt.Printf("Error deriving key from mnemonic: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Create address from public key hash
@@ -112,6 +133,12 @@ func cmdInit(args []string) {
 		os.Exit(1)
 	}
 
+	// Mark as mnemonic-derived wallet
+	if mnemonicPhrase != "" {
+		markerPath := filepath.Join(*walletDir, ".mnemonic")
+		os.WriteFile(markerPath, []byte("mnemonic-derived"), 0600)
+	}
+
 	fmt.Println("========================================")
 	fmt.Println("        WALLET CREATED SUCCESSFULLY")
 	fmt.Println("========================================")
@@ -120,12 +147,31 @@ func cmdInit(args []string) {
 	fmt.Printf("  Security:  192-bit (quantum-safe)\n")
 	fmt.Printf("  Address:   %s\n", address)
 	fmt.Println()
+
+	if mnemonicPhrase != "" {
+		fmt.Println("========================================")
+		fmt.Println("    WRITE DOWN YOUR RECOVERY PHRASE")
+		fmt.Println("========================================")
+		fmt.Println()
+		words := strings.Split(mnemonicPhrase, " ")
+		for i, word := range words {
+			fmt.Printf("  %2d. %s\n", i+1, word)
+		}
+		fmt.Println()
+		fmt.Println("========================================")
+		fmt.Println()
+		fmt.Println("WARNING: This is the ONLY time your recovery phrase will be shown.")
+		fmt.Println("Write it down and store it somewhere safe.")
+		fmt.Println("Anyone with these words can access your wallet.")
+		fmt.Println("You can restore this wallet with: dilithium-cli wallet restore")
+	} else {
+		fmt.Println("  (Legacy wallet — no recovery phrase)")
+	}
+
+	fmt.Println()
 	fmt.Printf("  Location: %s\n", *walletDir)
 	fmt.Println()
 	fmt.Println("========================================")
-	fmt.Println()
-	fmt.Println("IMPORTANT: Back up your wallet directory!")
-	fmt.Println("If you lose your private key, you lose your funds.")
 	fmt.Println()
 	fmt.Println("Quick start:")
 	fmt.Println("  dilithium-cli balance          # Check your balance")
@@ -231,6 +277,124 @@ func cmdWalletExport(args []string) {
 	fmt.Println("Private Key (KEEP SECRET!):")
 	fmt.Println(string(privateKeyData))
 	fmt.Println("===================================")
+}
+
+// cmdWalletRestore restores a wallet from a BIP39 mnemonic phrase
+func cmdWalletRestore(args []string) {
+	fs := flag.NewFlagSet("wallet restore", flag.ExitOnError)
+	walletDir := fs.String("wallet", DefaultWalletDir, "Wallet directory")
+	force := fs.Bool("force", false, "Overwrite existing wallet")
+	fs.Parse(args)
+
+	// Check if wallet already exists
+	privateKeyPath := filepath.Join(*walletDir, "private.pem")
+	if _, err := os.Stat(privateKeyPath); err == nil && !*force {
+		fmt.Println("Wallet already exists!")
+		fmt.Printf("Location: %s\n", *walletDir)
+		fmt.Println("\nUse --force to overwrite (THIS WILL DELETE YOUR EXISTING WALLET)")
+		os.Exit(1)
+	}
+
+	fmt.Println("Restore wallet from recovery phrase")
+	fmt.Println("Enter your 24-word recovery phrase (space-separated):")
+	fmt.Println()
+	fmt.Print("> ")
+	mnemonicPhrase := readPassphrase()
+
+	if !mnemonic.Validate(mnemonicPhrase) {
+		fmt.Println("Error: Invalid recovery phrase. Please check your words and try again.")
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Println("Deriving wallet from recovery phrase...")
+
+	publicKey, privateKey, err := mnemonic.GenerateKeyFromMnemonic(mnemonicPhrase)
+	if err != nil {
+		fmt.Printf("Error deriving key: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Create address
+	pubKeyBytes, _ := publicKey.MarshalBinary()
+	hash := sha256.Sum256(pubKeyBytes)
+	address := hex.EncodeToString(hash[:])[:40]
+
+	// Create wallet directory
+	if err := os.MkdirAll(*walletDir, 0700); err != nil {
+		fmt.Printf("Error creating directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Ask for passphrase
+	fmt.Print("Enter passphrase to encrypt wallet (leave empty for no encryption): ")
+	passphrase := readPassphrase()
+
+	privKeyBytes, _ := privateKey.MarshalBinary()
+
+	if passphrase != "" {
+		fmt.Print("Confirm passphrase: ")
+		confirm := readPassphrase()
+		if passphrase != confirm {
+			fmt.Println("Passphrases do not match.")
+			os.Exit(1)
+		}
+
+		encrypted, err := encryptKey(privKeyBytes, passphrase)
+		if err != nil {
+			fmt.Printf("Error encrypting key: %v\n", err)
+			os.Exit(1)
+		}
+		privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+			Type:  "DILITHIUM ENCRYPTED PRIVATE KEY",
+			Bytes: encrypted,
+		})
+		if err := os.WriteFile(privateKeyPath, privateKeyPEM, 0600); err != nil {
+			fmt.Printf("Error saving private key: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+			Type:  "DILITHIUM PRIVATE KEY",
+			Bytes: privKeyBytes,
+		})
+		if err := os.WriteFile(privateKeyPath, privateKeyPEM, 0600); err != nil {
+			fmt.Printf("Error saving private key: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Save public key
+	publicKeyPath := filepath.Join(*walletDir, "public.pem")
+	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "DILITHIUM PUBLIC KEY",
+		Bytes: pubKeyBytes,
+	})
+	if err := os.WriteFile(publicKeyPath, publicKeyPEM, 0644); err != nil {
+		fmt.Printf("Error saving public key: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Save address
+	addressPath := filepath.Join(*walletDir, "address")
+	if err := os.WriteFile(addressPath, []byte(address), 0644); err != nil {
+		fmt.Printf("Error saving address: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Mark as mnemonic-derived
+	markerPath := filepath.Join(*walletDir, ".mnemonic")
+	os.WriteFile(markerPath, []byte("mnemonic-derived"), 0600)
+
+	fmt.Println()
+	fmt.Println("========================================")
+	fmt.Println("       WALLET RESTORED SUCCESSFULLY")
+	fmt.Println("========================================")
+	fmt.Println()
+	fmt.Printf("  Address: %s\n", address)
+	fmt.Printf("  Location: %s\n", *walletDir)
+	fmt.Println()
+	fmt.Println("========================================")
 }
 
 // showKeyInfo displays information about a specific key file

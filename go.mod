@@ -5,7 +5,9 @@ go 1.25.6
 require (
 	github.com/cloudflare/circl v1.6.3
 	github.com/jcuga/go-upnp v0.0.0-20160830125909-492b17f02cbb
+	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/wailsapp/wails/v2 v2.11.0
+	golang.org/x/crypto v0.33.0
 )
 
 require (
@@ -33,7 +35,6 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
-	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect

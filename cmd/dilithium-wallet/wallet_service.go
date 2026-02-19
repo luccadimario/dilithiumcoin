@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/cloudflare/circl/sign/dilithium/mode3"
+	"myblockchain/pkg/mnemonic"
 )
 
 type walletService struct {
@@ -92,6 +93,98 @@ func (ws *walletService) create(passphrase string) (string, error) {
 	if err := os.WriteFile(addressPath, []byte(address), 0644); err != nil {
 		return "", fmt.Errorf("failed to save address: %v", err)
 	}
+
+	// Keep keys in memory
+	ws.privateKey = privateKey
+	ws.publicKey = publicKey
+	ws.address = address
+
+	return address, nil
+}
+
+// createFromMnemonic generates a new wallet from a BIP39 mnemonic phrase.
+// Returns the mnemonic phrase and address.
+func (ws *walletService) createFromMnemonic(passphrase string) (string, string, error) {
+	mnemonicPhrase, err := mnemonic.Generate()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate mnemonic: %v", err)
+	}
+
+	address, err := ws.saveFromMnemonic(mnemonicPhrase, passphrase)
+	if err != nil {
+		return "", "", err
+	}
+	return mnemonicPhrase, address, nil
+}
+
+// restoreFromMnemonic restores a wallet from an existing BIP39 mnemonic phrase.
+func (ws *walletService) restoreFromMnemonic(mnemonicPhrase, passphrase string) (string, error) {
+	if !mnemonic.Validate(mnemonicPhrase) {
+		return "", fmt.Errorf("invalid recovery phrase")
+	}
+	return ws.saveFromMnemonic(mnemonicPhrase, passphrase)
+}
+
+// saveFromMnemonic derives a key pair from a mnemonic and saves the wallet to disk.
+func (ws *walletService) saveFromMnemonic(mnemonicPhrase, passphrase string) (string, error) {
+	publicKey, privateKey, err := mnemonic.GenerateKeyFromMnemonic(mnemonicPhrase)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive key: %v", err)
+	}
+
+	pubKeyBytes, _ := publicKey.MarshalBinary()
+	hash := sha256.Sum256(pubKeyBytes)
+	address := hex.EncodeToString(hash[:])[:40]
+
+	if err := os.MkdirAll(ws.walletDir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create directory: %v", err)
+	}
+
+	privKeyBytes, _ := privateKey.MarshalBinary()
+	privateKeyPath := filepath.Join(ws.walletDir, "private.pem")
+
+	if passphrase != "" {
+		encrypted, err := encryptKey(privKeyBytes, passphrase)
+		if err != nil {
+			return "", fmt.Errorf("failed to encrypt key: %v", err)
+		}
+		privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+			Type:  "DILITHIUM ENCRYPTED PRIVATE KEY",
+			Bytes: encrypted,
+		})
+		if err := os.WriteFile(privateKeyPath, privateKeyPEM, 0600); err != nil {
+			return "", fmt.Errorf("failed to save private key: %v", err)
+		}
+		ws.encrypted = true
+	} else {
+		privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+			Type:  "DILITHIUM PRIVATE KEY",
+			Bytes: privKeyBytes,
+		})
+		if err := os.WriteFile(privateKeyPath, privateKeyPEM, 0600); err != nil {
+			return "", fmt.Errorf("failed to save private key: %v", err)
+		}
+	}
+
+	// Save public key
+	publicKeyPath := filepath.Join(ws.walletDir, "public.pem")
+	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "DILITHIUM PUBLIC KEY",
+		Bytes: pubKeyBytes,
+	})
+	if err := os.WriteFile(publicKeyPath, publicKeyPEM, 0644); err != nil {
+		return "", fmt.Errorf("failed to save public key: %v", err)
+	}
+
+	// Save address
+	addressPath := filepath.Join(ws.walletDir, "address")
+	if err := os.WriteFile(addressPath, []byte(address), 0644); err != nil {
+		return "", fmt.Errorf("failed to save address: %v", err)
+	}
+
+	// Mark as mnemonic-derived
+	markerPath := filepath.Join(ws.walletDir, ".mnemonic")
+	os.WriteFile(markerPath, []byte("mnemonic-derived"), 0600)
 
 	// Keep keys in memory
 	ws.privateKey = privateKey

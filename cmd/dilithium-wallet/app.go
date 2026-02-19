@@ -28,6 +28,14 @@ type WalletInfo struct {
 	Encrypted bool   `json:"encrypted"`
 }
 
+// MnemonicResult is returned when creating a wallet with mnemonic
+type MnemonicResult struct {
+	Mnemonic  string `json:"mnemonic"`
+	Address   string `json:"address"`
+	Encrypted bool   `json:"encrypted"`
+	Error     string `json:"error,omitempty"`
+}
+
 // BalanceInfo holds balance data from the node
 type BalanceInfo struct {
 	Address          string `json:"address"`
@@ -107,6 +115,37 @@ func (a *App) CreateWallet(passphrase string) WalletInfo {
 	defer a.mu.Unlock()
 
 	address, err := a.wallet.create(passphrase)
+	if err != nil {
+		return WalletInfo{Address: fmt.Sprintf("ERROR: %v", err)}
+	}
+	return WalletInfo{
+		Address:   address,
+		Encrypted: passphrase != "",
+	}
+}
+
+// CreateWalletWithMnemonic creates a new wallet and returns the mnemonic phrase
+func (a *App) CreateWalletWithMnemonic(passphrase string) MnemonicResult {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	mnemonicPhrase, address, err := a.wallet.createFromMnemonic(passphrase)
+	if err != nil {
+		return MnemonicResult{Error: fmt.Sprintf("ERROR: %v", err)}
+	}
+	return MnemonicResult{
+		Mnemonic:  mnemonicPhrase,
+		Address:   address,
+		Encrypted: passphrase != "",
+	}
+}
+
+// RestoreFromMnemonic restores a wallet from a BIP39 mnemonic phrase
+func (a *App) RestoreFromMnemonic(mnemonicPhrase, passphrase string) WalletInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	address, err := a.wallet.restoreFromMnemonic(mnemonicPhrase, passphrase)
 	if err != nil {
 		return WalletInfo{Address: fmt.Sprintf("ERROR: %v", err)}
 	}

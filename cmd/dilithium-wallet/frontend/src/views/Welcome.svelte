@@ -1,11 +1,14 @@
 <script>
   import { currentView, walletAddress, walletUnlocked, walletEncrypted, showToast } from '../lib/stores.js'
 
-  let mode = 'choose' // 'choose', 'create', 'unlock'
+  let mode = 'choose' // 'choose', 'create', 'mnemonic', 'restore', 'unlock'
   let passphrase = ''
   let confirmPassphrase = ''
   let loading = false
   let hasExisting = false
+  let mnemonicWords = []
+  let mnemonicConfirmed = false
+  let restorePhrase = ''
 
   import { onMount } from 'svelte'
 
@@ -24,18 +27,53 @@
 
     loading = true
     try {
-      const info = await window.go.main.App.CreateWallet(passphrase)
+      const result = await window.go.main.App.CreateWalletWithMnemonic(passphrase)
+      if (result.error) {
+        showToast(result.error, 'error')
+        return
+      }
+      // Store wallet info and show mnemonic
+      mnemonicWords = result.mnemonic.split(' ')
+      $walletAddress = result.address
+      $walletEncrypted = result.encrypted
+      mode = 'mnemonic'
+    } catch (e) {
+      showToast('Failed to create wallet: ' + e, 'error')
+    } finally {
+      loading = false
+    }
+  }
+
+  function confirmMnemonic() {
+    $walletUnlocked = true
+    $currentView = 'dashboard'
+    showToast('Wallet created successfully!', 'success')
+  }
+
+  async function restoreWallet() {
+    if (!restorePhrase.trim()) {
+      showToast('Please enter your recovery phrase', 'error')
+      return
+    }
+    if (passphrase && passphrase !== confirmPassphrase) {
+      showToast('Passphrases do not match', 'error')
+      return
+    }
+
+    loading = true
+    try {
+      const info = await window.go.main.App.RestoreFromMnemonic(restorePhrase.trim(), passphrase)
       if (info.address.startsWith('ERROR')) {
-        showToast(info.address, 'error')
+        showToast(info.address.replace('ERROR: ', ''), 'error')
         return
       }
       $walletAddress = info.address
       $walletEncrypted = info.encrypted
       $walletUnlocked = true
       $currentView = 'dashboard'
-      showToast('Wallet created successfully!', 'success')
+      showToast('Wallet restored successfully!', 'success')
     } catch (e) {
-      showToast('Failed to create wallet: ' + e, 'error')
+      showToast('Failed to restore wallet: ' + e, 'error')
     } finally {
       loading = false
     }
@@ -73,12 +111,16 @@
         <button class="btn btn-primary" on:click={() => mode = 'create'}>
           Create New Wallet
         </button>
+        <button class="btn btn-secondary" on:click={() => mode = 'restore'}>
+          Restore from Recovery Phrase
+        </button>
         {#if hasExisting}
           <button class="btn btn-secondary" on:click={() => mode = 'unlock'}>
             Unlock Existing Wallet
           </button>
         {/if}
       </div>
+
     {:else if mode === 'create'}
       <form on:submit|preventDefault={createWallet} class="form">
         <div class="form-group">
@@ -111,6 +153,76 @@
         </div>
         <p class="hint">Your wallet will be stored in ~/.dilithium/wallet/</p>
       </form>
+
+    {:else if mode === 'mnemonic'}
+      <div class="mnemonic-section">
+        <div class="mnemonic-header">Recovery Phrase</div>
+        <p class="mnemonic-warning">
+          Write down these 24 words in order. This is the ONLY time they will be shown.
+          Anyone with these words can access your wallet.
+        </p>
+        <div class="mnemonic-grid">
+          {#each mnemonicWords as word, i}
+            <div class="mnemonic-word">
+              <span class="word-num">{i + 1}</span>
+              <span class="word-text">{word}</span>
+            </div>
+          {/each}
+        </div>
+        <label class="confirm-check">
+          <input type="checkbox" bind:checked={mnemonicConfirmed} />
+          I have written down my recovery phrase
+        </label>
+        <button
+          class="btn btn-primary"
+          on:click={confirmMnemonic}
+          disabled={!mnemonicConfirmed}
+        >
+          Continue to Wallet
+        </button>
+      </div>
+
+    {:else if mode === 'restore'}
+      <form on:submit|preventDefault={restoreWallet} class="form">
+        <div class="form-group">
+          <label for="restore-phrase">Recovery Phrase</label>
+          <textarea
+            id="restore-phrase"
+            bind:value={restorePhrase}
+            placeholder="Enter your 24-word recovery phrase"
+            rows="4"
+          ></textarea>
+        </div>
+        <div class="form-group">
+          <label for="restore-pass">Passphrase (optional)</label>
+          <input
+            id="restore-pass"
+            type="password"
+            bind:value={passphrase}
+            placeholder="Leave empty for no encryption"
+          />
+        </div>
+        {#if passphrase}
+          <div class="form-group">
+            <label for="restore-confirm">Confirm Passphrase</label>
+            <input
+              id="restore-confirm"
+              type="password"
+              bind:value={confirmPassphrase}
+              placeholder="Confirm passphrase"
+            />
+          </div>
+        {/if}
+        <div class="button-group">
+          <button type="submit" class="btn btn-primary" disabled={loading}>
+            {loading ? 'Restoring...' : 'Restore Wallet'}
+          </button>
+          <button type="button" class="btn btn-secondary" on:click={() => mode = 'choose'}>
+            Back
+          </button>
+        </div>
+      </form>
+
     {:else if mode === 'unlock'}
       <form on:submit|preventDefault={unlockWallet} class="form">
         <div class="form-group">
@@ -150,7 +262,7 @@
 
   .welcome-card {
     text-align: center;
-    max-width: 400px;
+    max-width: 480px;
     width: 100%;
     padding: 48px 40px;
   }
@@ -216,6 +328,24 @@
     border-color: #6366f1;
   }
 
+  .form-group textarea {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid #2d2f44;
+    background: #161822;
+    color: #e1e4ea;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    resize: vertical;
+  }
+
+  .form-group textarea:focus {
+    border-color: #6366f1;
+  }
+
   .button-group {
     display: flex;
     flex-direction: column;
@@ -263,5 +393,75 @@
     font-size: 12px;
     color: #4b5563;
     margin-top: 16px;
+  }
+
+  /* Mnemonic display */
+  .mnemonic-section {
+    text-align: center;
+  }
+
+  .mnemonic-header {
+    font-size: 20px;
+    font-weight: 600;
+    color: #e1e4ea;
+    margin-bottom: 12px;
+  }
+
+  .mnemonic-warning {
+    font-size: 13px;
+    color: #f59e0b;
+    margin-bottom: 20px;
+    line-height: 1.5;
+  }
+
+  .mnemonic-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+
+  .mnemonic-word {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #161822;
+    border: 1px solid #2d2f44;
+    border-radius: 8px;
+    padding: 8px 12px;
+    text-align: left;
+  }
+
+  .word-num {
+    font-size: 11px;
+    color: #4b5563;
+    min-width: 18px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  .word-text {
+    font-size: 13px;
+    color: #e1e4ea;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+
+  .confirm-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: #9ca3af;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .confirm-check input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #6366f1;
+    cursor: pointer;
   }
 </style>
