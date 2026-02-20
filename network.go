@@ -52,6 +52,7 @@ type Node struct {
 	// Peer management (v2.0)
 	PeerManager   *PeerManager
 	CensusManager *CensusManager
+	AutoUpdater   *AutoUpdater
 
 	// Mining state
 	MinerAddress    string
@@ -174,12 +175,12 @@ func (n *Node) AddBlock(block *Block, peerAddr string) error {
 	// Cancel our current mining - someone else won this round
 	n.cancelMining()
 
-	// Add block to chain
-	n.Blockchain.Blocks = append(n.Blockchain.Blocks, block)
-	n.Blockchain.persistBlock(block)
-
-	// Remove mined transactions from our mempool
-	n.Blockchain.clearMinedTransactions(block.Transactions)
+	// Add block to chain (AppendBlock persists to disk and clears mined txs)
+	if err := n.Blockchain.AppendBlock(block); err != nil {
+		n.Blockchain.mutex.Unlock()
+		fmt.Printf("ERROR: %v — block #%d from peer discarded\n", err, block.Index)
+		return nil
+	}
 
 	n.Blockchain.mutex.Unlock()
 

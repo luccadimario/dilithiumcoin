@@ -585,10 +585,11 @@ func (bc *Blockchain) GetCurrentDifficulty() int {
 	return difficultyBitsToHexDigits(bc.GetCurrentDifficultyBits())
 }
 
-// GetCurrentDifficultyBits returns the bit-based difficulty for the next block
+// GetCurrentDifficultyBits returns the bit-based difficulty for the next block.
+// Uses a write lock because GetCurrentDifficultyBitsLocked may cache difficulty state.
 func (bc *Blockchain) GetCurrentDifficultyBits() int {
-	bc.mutex.RLock()
-	defer bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 	return bc.GetCurrentDifficultyBitsLocked()
 }
 
@@ -1290,6 +1291,10 @@ func validateTransaction(tx *Transaction) error {
 		return fmt.Errorf("transaction amount must be positive")
 	}
 
+	if tx.Fee < 0 {
+		return fmt.Errorf("transaction fee must not be negative")
+	}
+
 	if tx.Signature == "" {
 		return fmt.Errorf("transaction must be signed")
 	}
@@ -1314,10 +1319,11 @@ func validateTransaction(tx *Transaction) error {
 // BALANCE & REWARD FUNCTIONS
 // ============================================================================
 
-// GetBalance calculates the confirmed balance using the cache (shannon #19)
+// GetBalance calculates the confirmed balance using the cache (shannon #19).
+// Uses a write lock because ensureBalanceCache may rebuild the cache.
 func (bc *Blockchain) GetBalance(address string) int64 {
-	bc.mutex.RLock()
-	defer bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 	return bc.getBalanceLocked(address)
 }
 
@@ -1327,10 +1333,11 @@ func (bc *Blockchain) getBalanceLocked(address string) int64 {
 	return bc.balanceCache[address]
 }
 
-// GetAvailableBalance returns balance minus pending outgoing transactions
+// GetAvailableBalance returns balance minus pending outgoing transactions.
+// Uses a write lock because ensureBalanceCache may rebuild the cache.
 func (bc *Blockchain) GetAvailableBalance(address string) int64 {
-	bc.mutex.RLock()
-	defer bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 
 	balance := bc.getBalanceLocked(address)
 
@@ -1413,12 +1420,13 @@ func (bc *Blockchain) ensureBalanceCache() {
 	bc.balanceCacheHeight = height
 }
 
-// GetTotalTransactions returns the total transaction count using the cache
+// GetTotalTransactions returns the total transaction count using the cache.
+// Uses a write lock because ensureBalanceCache may rebuild the cache.
 func (bc *Blockchain) GetTotalTransactions() int {
-	bc.mutex.RLock()
+	bc.mutex.Lock()
 	bc.ensureBalanceCache()
 	total := bc.totalTxCache
-	bc.mutex.RUnlock()
+	bc.mutex.Unlock()
 	return total
 }
 
@@ -1602,6 +1610,31 @@ func (bc *Blockchain) clearMinedTransactions(minedTxs []*Transaction) {
 	}
 
 	// Rebuild pending transactions from remaining mempool
+	bc.PendingTransactions = make([]*Transaction, 0, len(bc.Mempool))
+	for _, tx := range bc.Mempool {
+		bc.PendingTransactions = append(bc.PendingTransactions, tx)
+	}
+}
+
+// revalidateMempool removes mempool transactions that conflict with the new chain after a reorg.
+// Must be called with bc.mutex held.
+func (bc *Blockchain) revalidateMempool(chain []*Block) {
+	// Collect all transaction signatures that are already mined in the new chain
+	minedSigs := make(map[string]bool)
+	for _, block := range chain {
+		for _, tx := range block.Transactions {
+			if tx.From != "SYSTEM" {
+				minedSigs[tx.Signature] = true
+			}
+		}
+	}
+
+	// Remove mined txs and rebuild pending list
+	for sig := range bc.Mempool {
+		if minedSigs[sig] {
+			delete(bc.Mempool, sig)
+		}
+	}
 	bc.PendingTransactions = make([]*Transaction, 0, len(bc.Mempool))
 	for _, tx := range bc.Mempool {
 		bc.PendingTransactions = append(bc.PendingTransactions, tx)

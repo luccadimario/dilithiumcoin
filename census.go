@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -165,6 +166,12 @@ func (cm *CensusManager) ProcessAnnouncement(msg *NodeAnnounceMsg) bool {
 		return false
 	}
 
+	// Cap announcements map to prevent memory exhaustion from Sybil flooding
+	const maxAnnouncements = 10000
+	if !exists && len(cm.announcements) >= maxAnnouncements {
+		return false
+	}
+
 	cm.announcements[msg.NodeID] = msg
 	cm.seen[dedupeKey] = true
 
@@ -289,14 +296,16 @@ func (cm *CensusManager) pruneStale() {
 	seenCutoff := time.Now().Unix() - 3600
 	for key := range cm.seen {
 		// Parse timestamp from key "nodeID:timestamp"
-		var ts int64
+		prune := true // default: prune unparseable entries
 		for i := len(key) - 1; i >= 0; i-- {
 			if key[i] == ':' {
-				fmt.Sscanf(key[i+1:], "%d", &ts)
+				if ts, err := strconv.ParseInt(key[i+1:], 10, 64); err == nil {
+					prune = ts < seenCutoff
+				}
 				break
 			}
 		}
-		if ts > 0 && ts < seenCutoff {
+		if prune {
 			delete(cm.seen, key)
 		}
 	}

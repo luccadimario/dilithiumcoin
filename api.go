@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -115,6 +116,9 @@ func (n *Node) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/stats", rateLimitMiddleware(readLimiter, n.handleExplorerStats))
 	mux.HandleFunc("/explorer/tx", rateLimitMiddleware(readLimiter, n.handleExplorerTx))
 	mux.HandleFunc("/explorer/address", rateLimitMiddleware(readLimiter, n.handleGetAddress))
+
+	// Auto-update endpoint (seed nodes serve this for version checks)
+	mux.HandleFunc("/update/check", rateLimitMiddleware(readLimiter, n.handleUpdateCheck))
 
 	// Legacy endpoints (backwards compatibility)
 	mux.HandleFunc("/add-peer", rateLimitMiddleware(writeLimiter, n.handleAddPeerLegacy))
@@ -233,6 +237,31 @@ func (n *Node) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"min_transaction_fee":   MinTransactionFee,
 			"valid":                 true, // removed per-request full chain validation (use /chain/validate for on-demand check)
 			"uptime":                time.Now().Unix(),
+			"auto_update": func() interface{} {
+				if n.AutoUpdater != nil {
+					return n.AutoUpdater.UpdateStatus()
+				}
+				return map[string]interface{}{"enabled": false}
+			}(),
+		},
+	})
+}
+
+// handleUpdateCheck returns this node's version and binary hash.
+// Seed nodes serve this so other nodes can detect when a new version is available.
+func (n *Node) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Update check",
+		Data: UpdateCheckResponse{
+			Version:    Version,
+			Platform:   fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH),
+			BinaryHash: selfBinaryHash(),
 		},
 	})
 }
