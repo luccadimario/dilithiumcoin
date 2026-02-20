@@ -61,6 +61,11 @@ func (cm *CensusManager) NodeID() string {
 	return cm.nodeID
 }
 
+// Sign signs arbitrary data with this node's Ed25519 private key.
+func (cm *CensusManager) Sign(data []byte) []byte {
+	return ed25519.Sign(cm.nodeKey, data)
+}
+
 // Start launches the announcement and cleanup goroutines.
 func (cm *CensusManager) Start() {
 	go cm.announcementLoop()

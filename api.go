@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -117,8 +118,9 @@ func (n *Node) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/explorer/tx", rateLimitMiddleware(readLimiter, n.handleExplorerTx))
 	mux.HandleFunc("/explorer/address", rateLimitMiddleware(readLimiter, n.handleGetAddress))
 
-	// Auto-update endpoint (seed nodes serve this for version checks)
+	// Auto-update endpoints
 	mux.HandleFunc("/update/check", rateLimitMiddleware(readLimiter, n.handleUpdateCheck))
+	mux.HandleFunc("/admin/announce-update", rateLimitMiddleware(writeLimiter, n.handleAdminAnnounceUpdate))
 
 	// Legacy endpoints (backwards compatibility)
 	mux.HandleFunc("/add-peer", rateLimitMiddleware(writeLimiter, n.handleAddPeerLegacy))
@@ -148,6 +150,7 @@ func (n *Node) printAPIInfo(apiHost, apiPort string) {
 	fmt.Printf("  GET  /stats               - Explorer stats (for dashboards)\n")
 	fmt.Printf("  GET  /explorer/tx?hash=X  - Get transaction by hash\n")
 	fmt.Printf("  GET  /explorer/address?addr=X - Get address info\n")
+	fmt.Printf("  POST /admin/announce-update   - Trigger update announcement (seed nodes, localhost only)\n")
 	fmt.Println()
 }
 
@@ -263,6 +266,39 @@ func (n *Node) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 			Platform:   fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH),
 			BinaryHash: selfBinaryHash(),
 		},
+	})
+}
+
+// handleAdminAnnounceUpdate allows a seed node operator to manually trigger
+// re-emission of an update announcement. Restricted to localhost.
+func (n *Node) handleAdminAnnounceUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Only POST allowed")
+		return
+	}
+
+	// Restrict to localhost only
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if host != "127.0.0.1" && host != "::1" && host != "localhost" {
+		respondError(w, http.StatusForbidden, "Admin endpoints are localhost only")
+		return
+	}
+
+	if n.AutoUpdater == nil {
+		respondError(w, http.StatusNotImplemented, "Auto-updater not available")
+		return
+	}
+
+	if !n.AutoUpdater.isSeedNode {
+		respondError(w, http.StatusForbidden, "This node is not a trusted seed node")
+		return
+	}
+
+	n.AutoUpdater.EmitUpdateAnnouncement()
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Update announcement emitted",
 	})
 }
 

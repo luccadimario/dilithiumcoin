@@ -119,21 +119,19 @@ func main() {
 		node.CensusManager.Start()
 	}
 
-	// Start auto-updater (checks seed nodes for new versions)
-	var autoUpdater *AutoUpdater
-	if flags.AutoUpdate {
-		autoUpdater = NewAutoUpdater(config.Network.SeedNodes, func() {
-			node.StopAutoMining()
-			if node.CensusManager != nil {
-				node.CensusManager.Stop()
-			}
-			peerManager.SavePeerDatabase(config.PeersFilePath())
-			listener.Close()
-			peerManager.Stop()
-		})
-		autoUpdater.Start()
-		node.AutoUpdater = autoUpdater
-	}
+	// Create auto-updater (all nodes forward gossip; only --auto-update nodes download)
+	autoUpdater := NewAutoUpdater(config.Network.TrustedUpdateKeys, flags.AutoUpdate, func() {
+		node.StopAutoMining()
+		if node.CensusManager != nil {
+			node.CensusManager.Stop()
+		}
+		peerManager.SavePeerDatabase(config.PeersFilePath())
+		listener.Close()
+		peerManager.Stop()
+	})
+	node.AutoUpdater = autoUpdater
+	autoUpdater.SetNode(node)
+	autoUpdater.Start()
 
 	// Start API server
 	if config.API.Enabled {
@@ -176,7 +174,7 @@ func main() {
 	printNodeInfo(node, peerManager)
 
 	// Wait for shutdown signal
-	waitForShutdown(node, peerManager, listener, config, autoUpdater)
+	waitForShutdown(node, peerManager, listener, config)
 }
 
 // Flags holds all command-line flags
@@ -302,7 +300,7 @@ func setupNetworkAccess(node *Node, port string) {
 }
 
 // waitForShutdown waits for a shutdown signal and exits gracefully
-func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config *Config, autoUpdater *AutoUpdater) {
+func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config *Config) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
@@ -310,8 +308,8 @@ func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config 
 	fmt.Println("\nShutting down...")
 
 	// Stop auto-updater
-	if autoUpdater != nil {
-		autoUpdater.Stop()
+	if node.AutoUpdater != nil {
+		node.AutoUpdater.Stop()
 	}
 
 	// Stop mining

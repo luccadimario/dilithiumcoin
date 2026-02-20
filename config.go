@@ -75,6 +75,11 @@ type NetworkConfig struct {
 	GossipInterval time.Duration // Active addr gossip interval (default 10min)
 	CensusEnabled  bool          // Enable network census (default true)
 	DNSSeeds       []string      // DNS seed hostnames (stub for future)
+
+	// Trusted seed node public keys for gossip-based auto-update.
+	// Only update announcements signed by one of these keys are accepted.
+	// Values are hex-encoded Ed25519 public keys from ~/.dilithium/node_key.
+	TrustedUpdateKeys []string
 }
 
 // DefaultNetworkConfig returns the default network configuration
@@ -127,6 +132,12 @@ func DefaultNetworkConfig() *NetworkConfig {
 		GossipInterval: 10 * time.Minute,
 		CensusEnabled:  true,
 		DNSSeeds:       []string{"_dilt._tcp.seeds.dilithiumcoin.com"},
+
+		// Trusted seed node public keys for auto-update verification.
+		// Operators: run your seed node once, then paste the hex pubkey from ~/.dilithium/node_key here.
+		TrustedUpdateKeys: []string{
+			// TODO: populate with actual seed node Ed25519 public keys
+		},
 	}
 }
 

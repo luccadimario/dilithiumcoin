@@ -64,6 +64,7 @@ const (
 	MsgTypeBlocks          MsgType = "blocks"
 	MsgTypeNodeAnnounce    MsgType = "nodeannounce"
 	MsgTypeGetNodeAnnounce MsgType = "getnodeannounce"
+	MsgTypeUpdateAnnounce  MsgType = "updateannounce"
 )
 
 // ============================================================================
@@ -616,4 +617,15 @@ type GetNodeAnnounceMsg struct {
 // NewGetNodeAnnounceMsg creates a new request for cached announcements
 func NewGetNodeAnnounceMsg() *GetNodeAnnounceMsg {
 	return &GetNodeAnnounceMsg{}
+}
+
+// UpdateAnnounceMsg is a gossip-propagated update announcement from a trusted seed node.
+type UpdateAnnounceMsg struct {
+	NodeID     string `json:"node_id"`     // Signer's Ed25519 pubkey hex (must be trusted seed)
+	Version    string `json:"version"`     // New version (e.g. "4.2.0")
+	BinaryHash string `json:"binary_hash"` // SHA-256 of signer's platform binary
+	Platform   string `json:"platform"`    // Signer's GOOS-GOARCH
+	Timestamp  int64  `json:"timestamp"`
+	TTL        int    `json:"ttl"`       // Starts at 8
+	Signature  string `json:"signature"` // Ed25519 sig of "update:<nodeID>:<version>:<hash>:<timestamp>"
 }

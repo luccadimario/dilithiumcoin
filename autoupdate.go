@@ -1,9 +1,9 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,9 +25,9 @@ type UpdateCheckResponse struct {
 	BinaryHash string `json:"binary_hash"`
 }
 
-// AutoUpdater checks seed nodes for new versions, downloads from GitHub,
-// verifies the binary hash against the seed node's reported hash, and
-// restarts the node if --auto-update is enabled.
+// AutoUpdater propagates update announcements via gossip and optionally
+// downloads + verifies + restarts when --auto-update is enabled.
+// All nodes forward valid announcements; only auto-update nodes act on them.
 type AutoUpdater struct {
 	repoOwner  string
 	repoName   string
@@ -35,8 +35,11 @@ type AutoUpdater struct {
 	localMinor int
 	localPatch int
 
-	seedHosts  []string // hostnames extracted from seed node addresses
-	apiPort    string   // API port to check on seed nodes
+	trustedKeys       map[string]bool // trusted seed node pubkey hexes
+	seen              map[string]bool // dedup keyed on "nodeID:version"
+	isSeedNode        bool            // true if our NodeID is in trustedKeys
+	autoUpdateEnabled bool            // true if --auto-update passed (controls download, not forwarding)
+	node              *Node           // for broadcasting + signing
 
 	httpClient *http.Client
 	stopCh     chan struct{}
@@ -49,161 +52,233 @@ type AutoUpdater struct {
 	updatePending bool
 }
 
-// NewAutoUpdater creates a new auto-updater that checks seed nodes for updates.
-func NewAutoUpdater(seedNodes []string, shutdownFn func()) *AutoUpdater {
-	// Extract unique hostnames from seed node addresses (strip P2P port)
-	hosts := make([]string, 0, len(seedNodes))
-	seen := make(map[string]bool)
-	for _, addr := range seedNodes {
-		host := addr
-		if idx := strings.LastIndex(addr, ":"); idx != -1 {
-			host = addr[:idx]
-		}
-		if !seen[host] && host != "" {
-			seen[host] = true
-			hosts = append(hosts, host)
+// NewAutoUpdater creates a new gossip-based auto-updater.
+// trustedKeys: hex-encoded Ed25519 public keys of seed nodes authorized to sign updates.
+// autoUpdateEnabled: if true, this node will download and apply updates (not just forward).
+func NewAutoUpdater(trustedKeys []string, autoUpdateEnabled bool, shutdownFn func()) *AutoUpdater {
+	trusted := make(map[string]bool, len(trustedKeys))
+	for _, k := range trustedKeys {
+		if k != "" {
+			trusted[k] = true
 		}
 	}
 
 	return &AutoUpdater{
-		repoOwner:  "luccadimario",
-		repoName:   "dilithiumcoin",
-		localMajor: VersionMajor,
-		localMinor: VersionMinor,
-		localPatch: VersionPatch,
-		seedHosts:  hosts,
-		apiPort:    "8001",
-		httpClient: &http.Client{Timeout: 15 * time.Second},
-		stopCh:     make(chan struct{}),
-		shutdownFn: shutdownFn,
+		repoOwner:         "luccadimario",
+		repoName:          "dilithiumcoin",
+		localMajor:        VersionMajor,
+		localMinor:        VersionMinor,
+		localPatch:        VersionPatch,
+		trustedKeys:       trusted,
+		seen:              make(map[string]bool),
+		autoUpdateEnabled: autoUpdateEnabled,
+		httpClient:         &http.Client{Timeout: 15 * time.Second},
+		stopCh:            make(chan struct{}),
+		shutdownFn:        shutdownFn,
 	}
 }
 
-// Start launches the background update check loop.
-func (au *AutoUpdater) Start() {
-	fmt.Println("[auto-update] Auto-updater started, checking seed nodes every 5 minutes")
-	go au.loop()
+// SetNode sets the node reference (called after node is fully wired).
+func (au *AutoUpdater) SetNode(node *Node) {
+	au.node = node
+	// Determine if we are a seed node
+	if node.CensusManager != nil {
+		au.isSeedNode = au.trustedKeys[node.CensusManager.NodeID()]
+	}
 }
 
-// Stop signals the background loop to exit.
+// Start launches the gossip-based auto-updater.
+// If this node is a trusted seed, it periodically emits update announcements.
+func (au *AutoUpdater) Start() {
+	mode := "gossip-relay"
+	if au.isSeedNode {
+		mode = "gossip-seed"
+		go au.seedAnnouncementLoop()
+	}
+	if au.autoUpdateEnabled {
+		mode += "+download"
+	}
+	fmt.Printf("[auto-update] Started (mode: %s, trusted keys: %d)\n", mode, len(au.trustedKeys))
+}
+
+// Stop signals background loops to exit.
 func (au *AutoUpdater) Stop() {
 	close(au.stopCh)
 	fmt.Println("[auto-update] Auto-updater stopped")
 }
 
-func (au *AutoUpdater) loop() {
-	// Initial delay: let the node bootstrap and connect to peers
+// seedAnnouncementLoop emits update announcements every 30 minutes (seed nodes only).
+func (au *AutoUpdater) seedAnnouncementLoop() {
+	// Initial delay: let peers connect
 	select {
 	case <-time.After(30 * time.Second):
 	case <-au.stopCh:
 		return
 	}
 
-	au.checkAndUpdate()
+	au.emitUpdateAnnouncement()
 
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			au.checkAndUpdate()
+			au.emitUpdateAnnouncement()
 		case <-au.stopCh:
 			return
 		}
 	}
 }
 
-func (au *AutoUpdater) checkAndUpdate() {
-	au.mu.Lock()
-	au.lastCheck = time.Now()
-	au.mu.Unlock()
-
-	// Try each seed node until one responds
-	for _, host := range au.seedHosts {
-		resp, err := au.checkSeedNode(host)
-		if err != nil {
-			continue // try next seed
-		}
-
-		rMaj, rMin, rPatch, ok := parseVersion(resp.Version)
-		if !ok {
-			continue
-		}
-
-		au.mu.Lock()
-		au.latestRemote = resp.Version
-		au.mu.Unlock()
-
-		if !isNewer(rMaj, rMin, rPatch, au.localMajor, au.localMinor, au.localPatch) {
-			au.mu.Lock()
-			au.lastError = ""
-			au.updatePending = false
-			au.mu.Unlock()
-			fmt.Printf("[auto-update] Up to date (v%s)\n", Version)
-			return
-		}
-
-		fmt.Printf("[auto-update] New version available: v%s (current: v%s)\n", resp.Version, Version)
-
-		au.mu.Lock()
-		au.updatePending = true
-		au.mu.Unlock()
-
-		binaryName := au.binaryName()
-		downloadURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/%s",
-			au.repoOwner, au.repoName, resp.Version, binaryName)
-		checksumsURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/checksums-sha256.txt",
-			au.repoOwner, au.repoName, resp.Version)
-
-		err = au.performUpdate(downloadURL, checksumsURL, binaryName, resp)
-		if err != nil {
-			au.mu.Lock()
-			au.lastError = err.Error()
-			au.mu.Unlock()
-			fmt.Printf("[auto-update] Update failed: %v\n", err)
-		}
+// emitUpdateAnnouncement builds, signs, and broadcasts an UpdateAnnounceMsg.
+func (au *AutoUpdater) emitUpdateAnnouncement() {
+	if au.node == nil || au.node.CensusManager == nil || au.node.PeerManager == nil {
 		return
 	}
 
-	// No seed node responded
+	cm := au.node.CensusManager
+	now := time.Now().Unix()
+	platform := fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
+	hash := selfBinaryHash()
+
+	msg := &UpdateAnnounceMsg{
+		NodeID:     cm.NodeID(),
+		Version:    Version,
+		BinaryHash: hash,
+		Platform:   platform,
+		Timestamp:  now,
+		TTL:        8,
+	}
+
+	// Sign: "update:<nodeID>:<version>:<hash>:<timestamp>"
+	sigData := fmt.Sprintf("update:%s:%s:%s:%d", msg.NodeID, msg.Version, msg.BinaryHash, msg.Timestamp)
+	sig := cm.Sign([]byte(sigData))
+	msg.Signature = hex.EncodeToString(sig)
+
+	// Mark as seen so we don't process our own announcement
+	dedupeKey := fmt.Sprintf("%s:%s", msg.NodeID, msg.Version)
 	au.mu.Lock()
-	au.lastError = "no seed nodes reachable"
+	au.seen[dedupeKey] = true
 	au.mu.Unlock()
+
+	au.node.PeerManager.Broadcast(MsgTypeUpdateAnnounce, msg)
+	fmt.Printf("[auto-update] Emitted update announcement v%s (platform: %s)\n", Version, platform)
 }
 
-func (au *AutoUpdater) checkSeedNode(host string) (*UpdateCheckResponse, error) {
-	url := fmt.Sprintf("http://%s:%s/update/check", host, au.apiPort)
-	resp, err := au.httpClient.Get(url)
-	if err != nil {
-		return nil, err
+// EmitUpdateAnnouncement is the exported version for the admin API endpoint.
+func (au *AutoUpdater) EmitUpdateAnnouncement() {
+	if !au.isSeedNode {
+		fmt.Println("[auto-update] Not a seed node, cannot emit update announcement")
+		return
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("seed node returned status %d", resp.StatusCode)
-	}
-
-	var apiResp APIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, err
-	}
-
-	// Re-marshal the Data field to decode into UpdateCheckResponse
-	dataBytes, err := json.Marshal(apiResp.Data)
-	if err != nil {
-		return nil, err
-	}
-
-	var updateResp UpdateCheckResponse
-	if err := json.Unmarshal(dataBytes, &updateResp); err != nil {
-		return nil, err
-	}
-
-	return &updateResp, nil
+	au.emitUpdateAnnouncement()
 }
 
-func (au *AutoUpdater) binaryName() string {
+// ProcessUpdateAnnouncement validates, deduplicates, and optionally triggers a download.
+// Returns true if the announcement should be forwarded to peers.
+func (au *AutoUpdater) ProcessUpdateAnnouncement(msg *UpdateAnnounceMsg) bool {
+	if msg == nil || msg.NodeID == "" || msg.Signature == "" || msg.Version == "" {
+		return false
+	}
+
+	// TTL exhausted
+	if msg.TTL <= 0 {
+		return false
+	}
+
+	// Reject announcements older than 1 hour
+	if time.Now().Unix()-msg.Timestamp > 3600 {
+		return false
+	}
+
+	// Trust check: signer must be in trustedKeys
+	if !au.trustedKeys[msg.NodeID] {
+		return false
+	}
+
+	// Verify Ed25519 signature
+	pubBytes, err := hex.DecodeString(msg.NodeID)
+	if err != nil || len(pubBytes) != ed25519.PublicKeySize {
+		return false
+	}
+	sigData := fmt.Sprintf("update:%s:%s:%s:%d", msg.NodeID, msg.Version, msg.BinaryHash, msg.Timestamp)
+	sigBytes, err := hex.DecodeString(msg.Signature)
+	if err != nil {
+		return false
+	}
+	if !ed25519.Verify(ed25519.PublicKey(pubBytes), []byte(sigData), sigBytes) {
+		return false
+	}
+
+	// Dedup check
+	dedupeKey := fmt.Sprintf("%s:%s", msg.NodeID, msg.Version)
+	au.mu.Lock()
+	if au.seen[dedupeKey] {
+		au.mu.Unlock()
+		return false
+	}
+	au.seen[dedupeKey] = true
+	au.mu.Unlock()
+
+	rMaj, rMin, rPatch, ok := parseVersion(msg.Version)
+	if !ok {
+		return true // still forward even if we can't parse
+	}
+
+	au.mu.Lock()
+	au.latestRemote = msg.Version
+	au.lastCheck = time.Now()
+	au.mu.Unlock()
+
+	if !isNewer(rMaj, rMin, rPatch, au.localMajor, au.localMinor, au.localPatch) {
+		au.mu.Lock()
+		au.lastError = ""
+		au.updatePending = false
+		au.mu.Unlock()
+		fmt.Printf("[auto-update] Received announcement v%s (up to date)\n", msg.Version)
+		return true // forward even though we don't need it
+	}
+
+	fmt.Printf("[auto-update] New version announced: v%s (current: v%s) from trusted seed %s...\n",
+		msg.Version, Version, msg.NodeID[:16])
+
+	au.mu.Lock()
+	au.updatePending = true
+	au.mu.Unlock()
+
+	// Only download if --auto-update is enabled
+	if au.autoUpdateEnabled {
+		go au.triggerDownload(msg)
+	}
+
+	return true // forward to peers
+}
+
+// triggerDownload downloads, verifies, and applies an update from a gossip announcement.
+func (au *AutoUpdater) triggerDownload(msg *UpdateAnnounceMsg) {
+	binaryName := binaryName()
+	downloadURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/%s",
+		au.repoOwner, au.repoName, msg.Version, binaryName)
+	checksumsURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/checksums-sha256.txt",
+		au.repoOwner, au.repoName, msg.Version)
+
+	resp := &UpdateCheckResponse{
+		Version:    msg.Version,
+		Platform:   msg.Platform,
+		BinaryHash: msg.BinaryHash,
+	}
+
+	err := au.performUpdate(downloadURL, checksumsURL, binaryName, resp)
+	if err != nil {
+		au.mu.Lock()
+		au.lastError = err.Error()
+		au.mu.Unlock()
+		fmt.Printf("[auto-update] Update failed: %v\n", err)
+	}
+}
+
+func binaryName() string {
 	name := fmt.Sprintf("dilithium-%s-%s", runtime.GOOS, runtime.GOARCH)
 	if runtime.GOOS == "windows" {
 		name += ".exe"
@@ -211,7 +286,7 @@ func (au *AutoUpdater) binaryName() string {
 	return name
 }
 
-func (au *AutoUpdater) performUpdate(binaryURL, checksumsURL, binaryName string, seedResp *UpdateCheckResponse) error {
+func (au *AutoUpdater) performUpdate(binaryURL, checksumsURL, binName string, seedResp *UpdateCheckResponse) error {
 	// Step 1: Determine expected hash.
 	// If same platform as seed node, use the seed node's hash directly.
 	// Otherwise, fall back to GitHub checksums file.
@@ -220,11 +295,11 @@ func (au *AutoUpdater) performUpdate(binaryURL, checksumsURL, binaryName string,
 
 	if seedResp.Platform == myPlatform && seedResp.BinaryHash != "" {
 		expectedHash = seedResp.BinaryHash
-		fmt.Println("[auto-update] Using hash from seed node (same platform)")
+		fmt.Println("[auto-update] Using hash from announcement (same platform)")
 	} else {
-		fmt.Println("[auto-update] Different platform from seed node, fetching GitHub checksums")
+		fmt.Println("[auto-update] Different platform from announcer, fetching GitHub checksums")
 		var err error
-		expectedHash, err = au.fetchExpectedChecksum(checksumsURL, binaryName)
+		expectedHash, err = au.fetchExpectedChecksum(checksumsURL, binName)
 		if err != nil {
 			return fmt.Errorf("failed to get checksums: %w", err)
 		}
@@ -323,7 +398,7 @@ func (au *AutoUpdater) performUpdate(binaryURL, checksumsURL, binaryName string,
 	return nil // unreachable
 }
 
-func (au *AutoUpdater) fetchExpectedChecksum(checksumsURL, binaryName string) (string, error) {
+func (au *AutoUpdater) fetchExpectedChecksum(checksumsURL, binName string) (string, error) {
 	resp, err := au.httpClient.Get(checksumsURL)
 	if err != nil {
 		return "", err
@@ -342,12 +417,12 @@ func (au *AutoUpdater) fetchExpectedChecksum(checksumsURL, binaryName string) (s
 	// Parse checksums file: each line is "hash  filename"
 	for _, line := range strings.Split(string(body), "\n") {
 		parts := strings.Fields(line)
-		if len(parts) == 2 && parts[1] == binaryName {
+		if len(parts) == 2 && parts[1] == binName {
 			return parts[0], nil
 		}
 	}
 
-	return "", fmt.Errorf("no checksum found for %s", binaryName)
+	return "", fmt.Errorf("no checksum found for %s", binName)
 }
 
 func (au *AutoUpdater) downloadFile(dst *os.File, url string) error {
@@ -373,12 +448,20 @@ func (au *AutoUpdater) UpdateStatus() map[string]interface{} {
 	au.mu.RLock()
 	defer au.mu.RUnlock()
 
+	mode := "gossip"
+	if au.isSeedNode {
+		mode = "gossip-seed"
+	}
+
 	return map[string]interface{}{
-		"enabled":        true,
-		"last_check":     au.lastCheck.Unix(),
-		"last_error":     au.lastError,
-		"latest_remote":  au.latestRemote,
-		"update_pending": au.updatePending,
+		"enabled":            au.autoUpdateEnabled,
+		"mode":               mode,
+		"is_seed_node":       au.isSeedNode,
+		"trusted_keys_count": len(au.trustedKeys),
+		"last_check":         au.lastCheck.Unix(),
+		"last_error":         au.lastError,
+		"latest_remote":      au.latestRemote,
+		"update_pending":     au.updatePending,
 	}
 }
 
