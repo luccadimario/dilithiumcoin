@@ -2006,6 +2006,7 @@ func (pm *PeerManager) isConnectedByIP(ip string) bool {
 	defer pm.peerMutex.RUnlock()
 
 	for _, peer := range pm.peers {
+		// Check the stored address (works when Addr is already an IP)
 		peerHost, _, err := net.SplitHostPort(peer.Addr)
 		if err != nil {
 			continue
@@ -2014,6 +2015,23 @@ func (pm *PeerManager) isConnectedByIP(ip string) bool {
 		peerHost = strings.TrimSuffix(peerHost, "]")
 		if peerHost == ip {
 			return true
+		}
+
+		// Also check the actual TCP remote IP (catches hostname-based outbound
+		// connections like "seed.dilithiumcoin.com:1701" where Addr is a hostname
+		// but the inbound arrives as a raw IP)
+		if peer.Conn != nil {
+			remoteAddr := peer.Conn.RemoteAddr()
+			if remoteAddr != nil {
+				remoteHost, _, err := net.SplitHostPort(remoteAddr.String())
+				if err == nil {
+					remoteHost = strings.TrimPrefix(remoteHost, "[")
+					remoteHost = strings.TrimSuffix(remoteHost, "]")
+					if remoteHost == ip {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false
