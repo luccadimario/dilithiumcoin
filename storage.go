@@ -64,6 +64,12 @@ func (s *ChainStore) SaveBlock(block *Block) error {
 		return fmt.Errorf("failed to rename block %d: %w", block.Index, err)
 	}
 
+	// Fsync the directory to ensure the rename is durable across crashes
+	if dirFd, err := os.Open(s.dir); err == nil {
+		dirFd.Sync()
+		dirFd.Close()
+	}
+
 	return nil
 }
 

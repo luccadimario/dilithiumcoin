@@ -1469,16 +1469,27 @@ func (pm *PeerManager) attemptReorg(peer *Peer, peerBlocks []*Block) {
 		tempChain = append(tempChain, block)
 	}
 
-	// All validated — apply the reorg
+	// All validated — persist FIRST, then replace in-memory chain.
+	// This guarantees disk and memory stay in sync even if persist fails.
 	reorgDepth := int64(len(bc.Blocks)) - forkIdx - 1
 	fmt.Printf("[reorg] Reorganizing chain: removing %d blocks, adding %d blocks (fork at #%d)\n",
 		reorgDepth, len(peerBlocks), forkIdx)
 
-	// Replace our chain
-	bc.Blocks = tempChain
+	// Save the old chain in case we need to rollback
+	oldBlocks := bc.Blocks
 
-	// Persist: save new blocks and remove orphaned files
-	bc.persistChainFrom(int(forkIdx + 1))
+	// Replace in-memory chain and attempt persist
+	bc.Blocks = tempChain
+	if err := bc.persistChainFrom(int(forkIdx + 1)); err != nil {
+		// Persist failed — rollback to old chain to keep disk/memory consistent
+		fmt.Printf("[reorg] CRITICAL: Failed to persist reorg: %v — rolling back to previous chain\n", err)
+		bc.Blocks = oldBlocks
+		bc.mutex.Unlock()
+		peer.mutex.Lock()
+		peer.syncInProgress = false
+		peer.mutex.Unlock()
+		return
+	}
 
 	// Recalculate difficulty for the new chain tip
 	bc.recalcDifficultyFromChain()

@@ -230,7 +230,8 @@ type Blockchain struct {
 	totalTxCache       int              // cached total transaction count
 
 	// Persistence
-	store *ChainStore // nil = no persistence (tests)
+	store            *ChainStore // nil = no persistence (tests)
+	persistRequired  bool        // true once SetStore is called — blocks MUST be persisted
 }
 
 // NewBlockchain initializes a new blockchain with genesis block
@@ -246,8 +247,11 @@ func NewBlockchain(difficulty int) *Blockchain {
 
 // SetStore attaches a ChainStore for disk persistence.
 // If the store contains a saved chain, it replaces the in-memory chain.
+// Once called, persistence becomes mandatory — AppendBlock will fail if
+// the store is nil or write fails, preventing silent data loss.
 func (bc *Blockchain) SetStore(store *ChainStore) error {
 	bc.store = store
+	bc.persistRequired = true
 
 	blocks, err := store.LoadChain()
 	if err != nil {
@@ -269,12 +273,17 @@ func (bc *Blockchain) SetStore(store *ChainStore) error {
 	return nil
 }
 
-// persistBlock saves a single block to disk (if store is set).
+// persistBlock saves a single block to disk.
 // Returns an error if the block could not be written — callers MUST NOT
 // add the block to the in-memory chain if this returns non-nil.
+// If SetStore was called (production), a nil store is a fatal error.
+// If SetStore was never called (tests), a nil store silently succeeds.
 func (bc *Blockchain) persistBlock(block *Block) error {
 	if bc.store == nil {
-		return nil
+		if bc.persistRequired {
+			return fmt.Errorf("chain store is nil after SetStore — block %d cannot be persisted (data loss risk)", block.Index)
+		}
+		return nil // Test mode: no store configured
 	}
 	if err := bc.store.SaveBlock(block); err != nil {
 		return fmt.Errorf("failed to persist block %d: %w", block.Index, err)
@@ -296,13 +305,19 @@ func (bc *Blockchain) AppendBlock(block *Block) error {
 }
 
 // persistChainFrom saves all blocks from startIndex onward and prunes orphans.
-func (bc *Blockchain) persistChainFrom(startIndex int) {
+// Returns an error if persistence fails — callers MUST handle this to avoid
+// in-memory chain diverging from on-disk chain.
+func (bc *Blockchain) persistChainFrom(startIndex int) error {
 	if bc.store == nil {
-		return
+		if bc.persistRequired {
+			return fmt.Errorf("chain store is nil after SetStore — cannot persist chain from index %d", startIndex)
+		}
+		return nil // Test mode
 	}
 	if err := bc.store.SaveChain(bc.Blocks, startIndex); err != nil {
-		fmt.Printf("WARNING: Failed to persist chain from index %d: %v\n", startIndex, err)
+		return fmt.Errorf("failed to persist chain from index %d: %w", startIndex, err)
 	}
+	return nil
 }
 
 // AddTransaction adds a transaction to the mempool
