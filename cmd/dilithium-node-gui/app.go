@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const NodeGUIVersion = "4.1.1"
+const NodeGUIVersion = "4.1.2"
 
 // apiResponse matches the node's response format
 type apiResponse struct {
