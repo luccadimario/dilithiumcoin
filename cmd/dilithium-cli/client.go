@@ -103,11 +103,18 @@ func cmdBalance(args []string) {
 		address = addr
 	}
 
+	// Normalize address (accept both dlt1-prefixed and raw hex)
+	normalizedAddr, err := NormalizeAddress(address)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Resolve which node to query (local or seed)
 	activeNode := resolveNodeURL(*nodeURL)
 
 	// Use the /explorer/address endpoint for efficient balance lookup
-	resp, err := getJSON(activeNode + "/explorer/address?addr=" + address)
+	resp, err := getJSON(activeNode + "/explorer/address?addr=" + normalizedAddr)
 	if err != nil {
 		fmt.Printf("Error: Could not connect to node at %s\n", activeNode)
 		fmt.Printf("       %v\n", err)
@@ -124,7 +131,7 @@ func cmdBalance(args []string) {
 	receivedDLT, _ := resp.Data["total_received_dlt"].(string)
 	sentDLT, _ := resp.Data["total_sent_dlt"].(string)
 
-	fmt.Printf("Address: %s\n", address)
+	fmt.Printf("Address: %s\n", AddressToChecksummed(normalizedAddr))
 	fmt.Printf("Balance: %s DLT\n", balanceDLT)
 	fmt.Printf("Total Received: %s DLT\n", receivedDLT)
 	fmt.Printf("Total Sent:     %s DLT\n", sentDLT)

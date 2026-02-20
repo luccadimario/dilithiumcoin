@@ -305,6 +305,13 @@ func (api *apiService) sendTransaction(ws *walletService, to string, amountDLT s
 		return TxResult{Success: false, Message: "wallet is locked"}
 	}
 
+	// Normalize recipient address (accept both dlt1-prefixed and raw hex)
+	toNormalized, err := normalizeAddress(to)
+	if err != nil {
+		return TxResult{Success: false, Message: fmt.Sprintf("invalid recipient address: %v", err)}
+	}
+	to = toNormalized
+
 	amount, err := parseDLT(amountDLT)
 	if err != nil {
 		return TxResult{Success: false, Message: err.Error()}

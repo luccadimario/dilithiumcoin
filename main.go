@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -11,6 +12,25 @@ import (
 	"time"
 )
 
+// trekQuotes is a curated list of Star Trek quotes for startup flavor
+var trekQuotes = []string{
+	`"Make it so." — Captain Picard`,
+	`"Live long and prosper." — Spock`,
+	`"Engage!" — Captain Picard`,
+	`"The needs of the many outweigh the needs of the few." — Spock`,
+	`"Resistance is futile." — The Borg`,
+	`"To boldly go where no one has gone before."`,
+	`"I'm a doctor, not a blockchain!" — Dr. McCoy`,
+	`"Warp speed, Mr. Sulu." — Captain Kirk`,
+	`"There are four lights!" — Captain Picard`,
+	`"Highly illogical." — Spock`,
+	`"It's life, Jim, but not as we know it."`,
+	`"Second star to the right, and straight on 'til morning." — Captain Kirk`,
+	`"The line must be drawn here!" — Captain Picard`,
+	`"Infinite diversity in infinite combinations." — Vulcan philosophy`,
+	`"Today is a good day to mine." — Worf`,
+}
+
 func main() {
 	// Parse command-line flags
 	flags := parseFlags()
@@ -18,6 +38,17 @@ func main() {
 	if flags.Version {
 		printVersion()
 		os.Exit(0)
+	}
+
+	// Set ship name for UserAgent
+	if flags.ShipName != "" {
+		SetShipName(flags.ShipName)
+	}
+
+	// Testnet mode: lower fork heights so all features are active from genesis
+	if flags.Testnet {
+		DataForkHeight = 0
+		MerkleRootForkHeight = 0
 	}
 
 	// Print startup banner
@@ -170,7 +201,7 @@ func main() {
 		fmt.Println("Warning: --auto-mine requires --miner address")
 	}
 
-	fmt.Println("\nNode is running. Press Ctrl+C to stop.")
+	fmt.Println("\nNode is running. Press Ctrl+C to initiate docking sequence.")
 	printNodeInfo(node, peerManager)
 
 	// Wait for shutdown signal
@@ -193,6 +224,7 @@ type Flags struct {
 	TLSCert    string
 	TLSKey     string
 	AutoUpdate bool
+	ShipName   string
 }
 
 // parseFlags parses command-line arguments
@@ -212,6 +244,7 @@ func parseFlags() Flags {
 	flag.StringVar(&flags.TLSCert, "tls-cert", "", "TLS certificate file for HTTPS API")
 	flag.StringVar(&flags.TLSKey, "tls-key", "", "TLS key file for HTTPS API")
 	flag.BoolVar(&flags.AutoUpdate, "auto-update", false, "Enable automatic updates from seed node version checks")
+	flag.StringVar(&flags.ShipName, "ship-name", "", "Ship name for UserAgent (e.g. Enterprise, Defiant, Voyager)")
 	flag.Parse()
 	return flags
 }
@@ -234,6 +267,9 @@ func printBanner() {
 	fmt.Println("  ╚═════╝ ╚═╝╚══════╝╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝     ╚═╝")
 	fmt.Printf("                       v%s - DLT Cryptocurrency\n", Version)
 	fmt.Println()
+	// Random Star Trek quote
+	quote := trekQuotes[rand.Intn(len(trekQuotes))]
+	fmt.Printf("  %s\n\n", quote)
 }
 
 // printStartupInfo prints startup configuration
@@ -332,6 +368,11 @@ func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config 
 
 	fmt.Println("Shutdown complete.")
 	os.Exit(0)
+}
+
+// randomTrekQuote returns a random Star Trek quote
+func randomTrekQuote() string {
+	return trekQuotes[rand.Intn(len(trekQuotes))]
 }
 
 // parsePort parses a port string to uint16

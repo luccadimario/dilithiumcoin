@@ -136,3 +136,93 @@ func TestTransactionSignVerifyRoundtrip(t *testing.T) {
 		t.Fatalf("VerifyTransactionSignature failed: %v", err)
 	}
 }
+
+func TestTransactionWithData(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+	tx := NewTransaction(w.Address, "recipient", 500, 10000)
+	tx.Data = "Hello from Dilithium!"
+	if err := tx.Sign(w); err != nil {
+		t.Fatalf("Sign() error: %v", err)
+	}
+	if err := VerifyTransactionSignature(tx); err != nil {
+		t.Fatalf("VerifyTransactionSignature failed for tx with data: %v", err)
+	}
+}
+
+func TestTransactionWithEmptyData(t *testing.T) {
+	// Transactions with empty Data should produce the same signature as before (backward compat)
+	t.Parallel()
+	w, _ := NewWallet()
+
+	tx1 := NewTransaction(w.Address, "recipient", 500, 10000)
+	tx1.Timestamp = 1234567890
+	if err := tx1.Sign(w); err != nil {
+		t.Fatalf("Sign() error: %v", err)
+	}
+
+	tx2 := NewTransaction(w.Address, "recipient", 500, 10000)
+	tx2.Timestamp = 1234567890
+	tx2.Data = "" // explicitly empty
+	if err := tx2.Sign(w); err != nil {
+		t.Fatalf("Sign() error: %v", err)
+	}
+
+	if tx1.Signature != tx2.Signature {
+		t.Error("Transactions with empty Data should produce identical signatures")
+	}
+}
+
+func TestTransactionDataMaxLength(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+
+	// 256 bytes should be fine
+	tx := NewTransaction(w.Address, "recipient", 100, 10000)
+	tx.Data = string(make([]byte, 256))
+	if err := tx.Sign(w); err != nil {
+		t.Fatalf("Sign() error: %v", err)
+	}
+	if err := validateTransaction(tx); err != nil {
+		t.Fatalf("validateTransaction should accept 256 byte data: %v", err)
+	}
+
+	// 257 bytes should be rejected
+	tx2 := NewTransaction(w.Address, "recipient", 100, 10000)
+	tx2.Data = string(make([]byte, 257))
+	if err := tx2.Sign(w); err != nil {
+		t.Fatalf("Sign() error: %v", err)
+	}
+	if err := validateTransaction(tx2); err == nil {
+		t.Fatal("validateTransaction should reject data > 256 bytes")
+	}
+}
+
+func TestTransactionDataInJSON(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+	tx := NewTransaction(w.Address, "recipient", 100, 10000)
+	tx.Data = "test memo"
+	tx.Sign(w)
+
+	jsonStr := tx.ToJSON()
+	var decoded Transaction
+	if err := json.Unmarshal([]byte(jsonStr), &decoded); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+	if decoded.Data != "test memo" {
+		t.Errorf("Data mismatch: got %q, want %q", decoded.Data, "test memo")
+	}
+}
+
+func TestTransactionDataOmitEmptyJSON(t *testing.T) {
+	// Data should be omitted from JSON when empty (omitempty)
+	t.Parallel()
+	tx := NewTransaction("from", "to", 100, 0)
+	jsonStr := tx.ToJSON()
+	var raw map[string]interface{}
+	json.Unmarshal([]byte(jsonStr), &raw)
+	if _, exists := raw["data"]; exists {
+		t.Error("empty Data field should be omitted from JSON")
+	}
+}

@@ -250,9 +250,43 @@ func (ws *walletService) lock() {
 	ws.address = ""
 }
 
-// getAddress returns the current address
+// getAddress returns the current address in checksummed format
 func (ws *walletService) getAddress() string {
+	if ws.address == "" {
+		return ""
+	}
+	return addressToChecksummed(ws.address)
+}
+
+// getRawAddress returns the raw 40-char hex address
+func (ws *walletService) getRawAddress() string {
 	return ws.address
+}
+
+// addressToChecksummed converts a raw 40-char hex address to dlt1-prefixed format
+func addressToChecksummed(rawHex string) string {
+	hash := sha256.Sum256([]byte("dlt1" + rawHex))
+	checksum := hex.EncodeToString(hash[:])[:4]
+	return "dlt1" + rawHex + checksum
+}
+
+// normalizeAddress accepts both dlt1-prefixed (48-char) and raw hex (40-char) addresses.
+// Returns the raw 40-char hex address. Validates checksum for dlt1 addresses.
+func normalizeAddress(address string) (string, error) {
+	if len(address) == 48 && address[:4] == "dlt1" {
+		rawHex := address[4:44]
+		checksum := address[44:48]
+		hash := sha256.Sum256([]byte("dlt1" + rawHex))
+		expected := hex.EncodeToString(hash[:])[:4]
+		if checksum != expected {
+			return "", fmt.Errorf("invalid address checksum: expected %s, got %s", expected, checksum)
+		}
+		return rawHex, nil
+	}
+	if len(address) == 40 {
+		return address, nil
+	}
+	return address, nil
 }
 
 // isUnlocked returns whether keys are loaded in memory

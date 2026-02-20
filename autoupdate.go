@@ -163,7 +163,7 @@ func (au *AutoUpdater) emitUpdateAnnouncement() {
 	au.mu.Unlock()
 
 	au.node.PeerManager.Broadcast(MsgTypeUpdateAnnounce, msg)
-	fmt.Printf("[auto-update] Emitted update announcement v%s (platform: %s)\n", Version, platform)
+	fmt.Printf("[auto-update] Emitted update announcement v%s (platform: %s) — %s\n", Version, platform, randomTrekQuote())
 }
 
 // EmitUpdateAnnouncement is the exported version for the admin API endpoint.
@@ -240,8 +240,8 @@ func (au *AutoUpdater) ProcessUpdateAnnouncement(msg *UpdateAnnounceMsg) bool {
 		return true // forward even though we don't need it
 	}
 
-	fmt.Printf("[auto-update] New version announced: v%s (current: v%s) from trusted seed %s...\n",
-		msg.Version, Version, msg.NodeID[:16])
+	fmt.Printf("[auto-update] New version announced: v%s (current: v%s) from trusted seed %s... — %s\n",
+		msg.Version, Version, msg.NodeID[:16], randomTrekQuote())
 
 	au.mu.Lock()
 	au.updatePending = true

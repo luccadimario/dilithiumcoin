@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-const WalletAppVersion = "4.1.2"
+const WalletAppVersion = "4.2.0"
 
 // Default paths
 var (
@@ -119,7 +119,7 @@ func (a *App) CreateWallet(passphrase string) WalletInfo {
 		return WalletInfo{Address: fmt.Sprintf("ERROR: %v", err)}
 	}
 	return WalletInfo{
-		Address:   address,
+		Address:   addressToChecksummed(address),
 		Encrypted: passphrase != "",
 	}
 }
@@ -135,7 +135,7 @@ func (a *App) CreateWalletWithMnemonic(passphrase string) MnemonicResult {
 	}
 	return MnemonicResult{
 		Mnemonic:  mnemonicPhrase,
-		Address:   address,
+		Address:   addressToChecksummed(address),
 		Encrypted: passphrase != "",
 	}
 }
@@ -150,7 +150,7 @@ func (a *App) RestoreFromMnemonic(mnemonicPhrase, passphrase string) WalletInfo 
 		return WalletInfo{Address: fmt.Sprintf("ERROR: %v", err)}
 	}
 	return WalletInfo{
-		Address:   address,
+		Address:   addressToChecksummed(address),
 		Encrypted: passphrase != "",
 	}
 }
@@ -165,7 +165,7 @@ func (a *App) LoadWallet(passphrase string) WalletInfo {
 		return WalletInfo{Address: fmt.Sprintf("ERROR: %v", err)}
 	}
 	return WalletInfo{
-		Address:   address,
+		Address:   addressToChecksummed(address),
 		Encrypted: encrypted,
 	}
 }

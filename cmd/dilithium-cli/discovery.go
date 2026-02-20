@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -67,9 +69,14 @@ func DiscoverNodes() []NodeCandidate {
 		seen[localURL] = true
 	}
 
-	// 3. DNS TXT lookup (stub for future)
-	// dnsSeeds := dnsTXTLookup("_dilt._tcp.seeds.dilithiumcoin.com")
-	// for _, seed := range dnsSeeds { ... }
+	// 3. DNS TXT lookup
+	dnsSeeds := resolveDNSTXTSeeds("_dilt._tcp.seeds.dilithiumcoin.com")
+	for _, seed := range dnsSeeds {
+		if !seen[seed] {
+			candidates = append(candidates, NodeCandidate{URL: seed})
+			seen[seed] = true
+		}
+	}
 
 	// 4. Hardcoded seeds
 	for _, seed := range hardcodedSeeds {
@@ -253,4 +260,30 @@ func DiscoverAllReachable(explicitNode string) []string {
 		urls = append(urls, "http://localhost:8001")
 	}
 	return urls
+}
+
+// resolveDNSTXTSeeds resolves DNS TXT records for seed discovery.
+// TXT records should contain "host:port" entries for node API endpoints.
+func resolveDNSTXTSeeds(hostname string) []string {
+	records, err := net.LookupTXT(hostname)
+	if err != nil {
+		return nil
+	}
+
+	var seeds []string
+	for _, record := range records {
+		// Each TXT record may contain one or more host:port entries separated by spaces
+		for _, entry := range strings.Fields(record) {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			// Ensure it has a scheme for HTTP usage
+			if !strings.HasPrefix(entry, "http://") && !strings.HasPrefix(entry, "https://") {
+				entry = "http://" + entry
+			}
+			seeds = append(seeds, entry)
+		}
+	}
+	return seeds
 }

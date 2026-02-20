@@ -620,7 +620,7 @@ func (pm *PeerManager) handleDisconnect(peer *Peer) {
 	delete(pm.peers, peer.Addr)
 	pm.peerMutex.Unlock()
 
-	fmt.Printf("Peer disconnected: %s\n", peer.Addr)
+	fmt.Printf("Peer disconnected (shields down): %s\n", peer.Addr)
 }
 
 // ============================================================================
@@ -2619,10 +2619,62 @@ func (pm *PeerManager) ConnectWithRetry(addr string, maxRetries int) error {
 // STARTUP SEQUENCE
 // ============================================================================
 
+// resolveDNSSeeds resolves DNS seed hostnames into peer addresses.
+// Tries SRV records first, then falls back to A record lookups with default port.
+func (pm *PeerManager) resolveDNSSeeds(dnsSeeds []string) []string {
+	var resolved []string
+	seen := make(map[string]bool)
+
+	for _, seed := range dnsSeeds {
+		// Try SRV records first (e.g. _dilt._tcp.seeds.dilithiumcoin.com)
+		_, addrs, err := net.LookupSRV("", "", seed)
+		if err == nil && len(addrs) > 0 {
+			for _, srv := range addrs {
+				host := strings.TrimSuffix(srv.Target, ".")
+				addr := fmt.Sprintf("%s:%d", host, srv.Port)
+				if !seen[addr] {
+					resolved = append(resolved, addr)
+					seen[addr] = true
+				}
+			}
+			fmt.Printf("DNS SRV: resolved %d peers from %s\n", len(addrs), seed)
+			continue
+		}
+
+		// Fall back to A record lookup
+		host := seed
+		// Strip SRV-style prefix for A record lookup
+		if strings.HasPrefix(seed, "_") {
+			parts := strings.SplitN(seed, ".", 3)
+			if len(parts) >= 3 {
+				host = parts[2]
+			}
+		}
+
+		ips, err := net.LookupHost(host)
+		if err != nil {
+			fmt.Printf("DNS lookup failed for %s: %v\n", host, err)
+			continue
+		}
+
+		for _, ip := range ips {
+			addr := fmt.Sprintf("%s:1701", ip)
+			if !seen[addr] {
+				resolved = append(resolved, addr)
+				seen[addr] = true
+			}
+		}
+		fmt.Printf("DNS A: resolved %d addresses from %s\n", len(ips), host)
+	}
+
+	return resolved
+}
+
 // Bootstrap performs the initial network bootstrap
 // 1. Try to connect to peers from peers.dat
-// 2. If no connections after timeout, fall back to seed nodes
-// 3. Use getaddr to discover more peers
+// 2. Try DNS seed resolution
+// 3. Fall back to hardcoded seed nodes
+// 4. Use getaddr to discover more peers
 func (pm *PeerManager) Bootstrap(config *NetworkConfig, peersFile string) error {
 	fmt.Println("Starting network bootstrap...")
 
@@ -2640,9 +2692,18 @@ func (pm *PeerManager) Bootstrap(config *NetworkConfig, peersFile string) error 
 	// Try to connect to known peers first
 	connected := pm.tryKnownPeers(config.SeedTimeout)
 
-	// If we couldn't connect to any known peers, try seed nodes
+	// Try DNS seeds before falling back to hardcoded seeds
+	if connected == 0 && len(config.DNSSeeds) > 0 {
+		fmt.Println("No connections from peers.dat, trying DNS seeds...")
+		dnsAddrs := pm.resolveDNSSeeds(config.DNSSeeds)
+		if len(dnsAddrs) > 0 {
+			connected = pm.trySeedNodes(dnsAddrs)
+		}
+	}
+
+	// If we couldn't connect via DNS, try hardcoded seed nodes
 	if connected == 0 {
-		fmt.Println("No connections from peers.dat, trying seed nodes...")
+		fmt.Println("No connections from DNS seeds, trying hardcoded seed nodes...")
 		connected = pm.trySeedNodes(config.SeedNodes)
 	}
 

@@ -55,7 +55,8 @@ func cmdSend(args []string) {
 			// If this flag takes a value, grab the next arg too
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") &&
 				(args[i] == "--node" || args[i] == "-node" || args[i] == "--wallet" || args[i] == "-wallet" ||
-					args[i] == "--fee" || args[i] == "-fee") {
+					args[i] == "--fee" || args[i] == "-fee" || args[i] == "--data" || args[i] == "-data" ||
+					args[i] == "--memo" || args[i] == "-memo") {
 				flagArgs = append(flagArgs, args[i+1])
 				i++
 			}
@@ -68,6 +69,8 @@ func cmdSend(args []string) {
 	walletDir := fs.String("wallet", DefaultWalletDir, "Wallet directory")
 	nodeURL := fs.String("node", "http://localhost:8001", "Node API URL")
 	feeStr := fs.String("fee", "0.0001", "Transaction fee in DLT (default: 0.0001)")
+	dataField := fs.String("data", "", "Optional memo/data field (max 256 bytes)")
+	fs.String("memo", "", "Alias for --data")
 	fs.Parse(flagArgs)
 
 	if len(positionalArgs) < 2 {
@@ -79,7 +82,11 @@ func cmdSend(args []string) {
 		os.Exit(1)
 	}
 
-	toAddress := positionalArgs[0]
+	toAddress, err := NormalizeAddress(positionalArgs[0])
+	if err != nil {
+		fmt.Printf("Error: invalid recipient address: %v\n", err)
+		os.Exit(1)
+	}
 	amount, err := ParseDLT(positionalArgs[1])
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -89,6 +96,18 @@ func cmdSend(args []string) {
 	fee, err := ParseDLT(*feeStr)
 	if err != nil {
 		fmt.Printf("Error parsing fee: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Handle --memo as alias for --data
+	txDataField := *dataField
+	if txDataField == "" {
+		if memo := fs.Lookup("memo"); memo != nil && memo.Value.String() != "" {
+			txDataField = memo.Value.String()
+		}
+	}
+	if len(txDataField) > 256 {
+		fmt.Println("Error: data/memo field exceeds maximum of 256 bytes")
 		os.Exit(1)
 	}
 
@@ -113,7 +132,12 @@ func cmdSend(args []string) {
 
 	// Create and sign transaction (includes fee in signing data)
 	timestamp := time.Now().Unix()
-	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d", fromAddress, toAddress, amount, fee, timestamp)
+	var txData string
+	if txDataField != "" {
+		txData = fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d:%s", fromAddress, toAddress, amount, fee, timestamp, txDataField)
+	} else {
+		txData = fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d", fromAddress, toAddress, amount, fee, timestamp)
+	}
 
 	// Dilithium signs the raw message directly
 	sig := make([]byte, mode3.SignatureSize)
@@ -128,6 +152,9 @@ func cmdSend(args []string) {
 	fmt.Printf("  To:     %s\n", toAddress)
 	fmt.Printf("  Amount: %s DLT\n", FormatDLT(amount))
 	fmt.Printf("  Fee:    %s DLT\n", FormatDLT(fee))
+	if txDataField != "" {
+		fmt.Printf("  Data:   %s\n", txDataField)
+	}
 	fmt.Println()
 
 	// Submit to node
@@ -139,6 +166,9 @@ func cmdSend(args []string) {
 		"timestamp":  timestamp,
 		"signature":  signatureHex,
 		"public_key": publicKeyHex,
+	}
+	if txDataField != "" {
+		tx["data"] = txDataField
 	}
 
 	// Submit to multiple discovered nodes in parallel for reliability
@@ -192,6 +222,8 @@ func cmdSignTransaction(args []string) {
 	amountStr := fs.String("amount", "", "Amount to send (in DLT)")
 	keyFile := fs.String("key", "", "Path to private key file")
 	walletDir := fs.String("wallet", DefaultWalletDir, "Wallet directory (if --key not specified)")
+	signDataField := fs.String("data", "", "Optional memo/data field (max 256 bytes)")
+	fs.String("memo", "", "Alias for --data")
 
 	fs.Parse(args)
 
@@ -253,13 +285,30 @@ func cmdSignTransaction(args []string) {
 	// Default fee for signed transactions
 	var fee int64 = 10000 // 0.0001 DLT
 
+	// Handle --memo as alias for --data
+	signTxData := *signDataField
+	if signTxData == "" {
+		if memo := fs.Lookup("memo"); memo != nil && memo.Value.String() != "" {
+			signTxData = memo.Value.String()
+		}
+	}
+	if len(signTxData) > 256 {
+		fmt.Println("Error: data/memo field exceeds maximum of 256 bytes")
+		os.Exit(1)
+	}
+
 	// Create and sign transaction (includes fee)
 	timestamp := time.Now().Unix()
-	txData := fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d", *from, *to, amount, fee, timestamp)
+	var txSignData string
+	if signTxData != "" {
+		txSignData = fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d:%s", *from, *to, amount, fee, timestamp, signTxData)
+	} else {
+		txSignData = fmt.Sprintf("dilithium-mainnet:%s%s%d%d%d", *from, *to, amount, fee, timestamp)
+	}
 
 	// Dilithium signs the raw message directly
 	sig := make([]byte, mode3.SignatureSize)
-	mode3.SignTo(privateKey, []byte(txData), sig)
+	mode3.SignTo(privateKey, []byte(txSignData), sig)
 	signatureHex := hex.EncodeToString(sig)
 
 	// Display the signed transaction
@@ -269,6 +318,9 @@ func cmdSignTransaction(args []string) {
 	fmt.Printf("To:        %s\n", *to)
 	fmt.Printf("Amount:    %s DLT (%d base units)\n", FormatDLT(amount), amount)
 	fmt.Printf("Fee:       %s DLT (%d base units)\n", FormatDLT(fee), fee)
+	if signTxData != "" {
+		fmt.Printf("Data:      %s\n", signTxData)
+	}
 	fmt.Printf("Timestamp: %d\n", timestamp)
 	fmt.Printf("Signature: %s...\n", signatureHex[:32])
 	fmt.Println("=========================================")
@@ -276,7 +328,20 @@ func cmdSignTransaction(args []string) {
 
 	// Show JSON for manual submission
 	fmt.Println("Transaction JSON:")
-	fmt.Printf(`{
+	if signTxData != "" {
+		fmt.Printf(`{
+  "from": "%s",
+  "to": "%s",
+  "amount": %d,
+  "fee": %d,
+  "data": "%s",
+  "timestamp": %d,
+  "signature": "%s",
+  "public_key": "%s"
+}
+`, *from, *to, amount, fee, signTxData, timestamp, signatureHex, publicKeyHex)
+	} else {
+		fmt.Printf(`{
   "from": "%s",
   "to": "%s",
   "amount": %d,
@@ -286,14 +351,20 @@ func cmdSignTransaction(args []string) {
   "public_key": "%s"
 }
 `, *from, *to, amount, fee, timestamp, signatureHex, publicKeyHex)
+	}
 	fmt.Println()
 
 	// Show curl command
 	fmt.Println("Submit with curl:")
 	fmt.Printf("curl -X POST http://localhost:8001/transaction \\\n")
 	fmt.Printf("  -H 'Content-Type: application/json' \\\n")
-	fmt.Printf("  -d '{\"from\":\"%s\",\"to\":\"%s\",\"amount\":%d,\"fee\":%d,\"timestamp\":%d,\"signature\":\"%s\",\"public_key\":\"%s\"}'\n",
-		*from, *to, amount, fee, timestamp, signatureHex, publicKeyHex)
+	if signTxData != "" {
+		fmt.Printf("  -d '{\"from\":\"%s\",\"to\":\"%s\",\"amount\":%d,\"fee\":%d,\"data\":\"%s\",\"timestamp\":%d,\"signature\":\"%s\",\"public_key\":\"%s\"}'\n",
+			*from, *to, amount, fee, signTxData, timestamp, signatureHex, publicKeyHex)
+	} else {
+		fmt.Printf("  -d '{\"from\":\"%s\",\"to\":\"%s\",\"amount\":%d,\"fee\":%d,\"timestamp\":%d,\"signature\":\"%s\",\"public_key\":\"%s\"}'\n",
+			*from, *to, amount, fee, timestamp, signatureHex, publicKeyHex)
+	}
 }
 
 // loadPrivateKeyFromFile loads a private key from a specific file

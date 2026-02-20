@@ -664,6 +664,7 @@ func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
 		To        string `json:"to"`
 		Amount    int64  `json:"amount"`
 		Fee       int64  `json:"fee"`
+		Data      string `json:"data"`
 		Timestamp int64  `json:"timestamp"`
 		Signature string `json:"signature"`
 		PublicKey string `json:"public_key"`
@@ -679,6 +680,7 @@ func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
 		To:        req.To,
 		Amount:    req.Amount,
 		Fee:       req.Fee,
+		Data:      req.Data,
 		Timestamp: req.Timestamp,
 		Signature: req.Signature,
 		PublicKey:  req.PublicKey,
@@ -1228,6 +1230,14 @@ func (n *Node) handleGetAddress(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Missing 'addr' query parameter")
 		return
 	}
+
+	// Normalize address (accept both dlt1-prefixed and raw hex)
+	normalizedAddr, err := NormalizeAddress(address)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Invalid address: %v", err))
+		return
+	}
+	address = normalizedAddr
 
 	// Use blockchain method to get address info (shannon #19)
 	balance, received, sent, transactions := n.Blockchain.GetAddressInfo(address)

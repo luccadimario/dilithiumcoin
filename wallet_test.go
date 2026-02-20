@@ -98,3 +98,100 @@ func TestMultipleWalletsUniqueAddresses(t *testing.T) {
 		seen[w.Address] = true
 	}
 }
+
+func TestAddressChecksum(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+	checksummed := AddressToChecksummed(w.Address)
+
+	// Should be 48 chars: "dlt1" (4) + address (40) + checksum (4)
+	if len(checksummed) != 48 {
+		t.Fatalf("expected checksummed address length 48, got %d: %s", len(checksummed), checksummed)
+	}
+	if checksummed[:4] != "dlt1" {
+		t.Fatalf("expected dlt1 prefix, got %s", checksummed[:4])
+	}
+	// The middle 40 chars should be the raw address
+	if checksummed[4:44] != w.Address {
+		t.Fatalf("address portion mismatch: got %s, want %s", checksummed[4:44], w.Address)
+	}
+}
+
+func TestAddressChecksumDeterministic(t *testing.T) {
+	t.Parallel()
+	addr := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+	cs1 := AddressToChecksummed(addr)
+	cs2 := AddressToChecksummed(addr)
+	if cs1 != cs2 {
+		t.Fatalf("checksum not deterministic: %s vs %s", cs1, cs2)
+	}
+}
+
+func TestAddressChecksumInvalid(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+	checksummed := AddressToChecksummed(w.Address)
+
+	// Tamper with checksum
+	tampered := checksummed[:44] + "0000"
+	_, err := NormalizeAddress(tampered)
+	if err == nil {
+		t.Fatal("expected error for invalid checksum, got nil")
+	}
+}
+
+func TestAddressBackwardCompat(t *testing.T) {
+	t.Parallel()
+	// Old 40-char hex address should still work
+	oldAddr := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+	normalized, err := NormalizeAddress(oldAddr)
+	if err != nil {
+		t.Fatalf("NormalizeAddress failed for old format: %v", err)
+	}
+	if normalized != oldAddr {
+		t.Fatalf("NormalizeAddress changed old address: got %s, want %s", normalized, oldAddr)
+	}
+}
+
+func TestAddressRoundtrip(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+
+	// Encode to checksummed
+	checksummed := AddressToChecksummed(w.Address)
+
+	// Decode back to raw
+	rawAddr, err := NormalizeAddress(checksummed)
+	if err != nil {
+		t.Fatalf("NormalizeAddress failed: %v", err)
+	}
+	if rawAddr != w.Address {
+		t.Fatalf("roundtrip failed: got %s, want %s", rawAddr, w.Address)
+	}
+
+	// Re-encode
+	reEncoded := AddressToChecksummed(rawAddr)
+	if reEncoded != checksummed {
+		t.Fatalf("re-encode mismatch: got %s, want %s", reEncoded, checksummed)
+	}
+}
+
+func TestChecksummedAddressMethod(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+	checksummed := w.ChecksummedAddress()
+	if checksummed != AddressToChecksummed(w.Address) {
+		t.Fatalf("ChecksummedAddress() mismatch: got %s", checksummed)
+	}
+}
+
+func TestNormalizeAddressSystem(t *testing.T) {
+	t.Parallel()
+	normalized, err := NormalizeAddress("SYSTEM")
+	if err != nil {
+		t.Fatalf("NormalizeAddress failed for SYSTEM: %v", err)
+	}
+	if normalized != "SYSTEM" {
+		t.Fatalf("expected SYSTEM, got %s", normalized)
+	}
+}

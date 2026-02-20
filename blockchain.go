@@ -19,6 +19,15 @@ import (
 // This is a var (not const) so that tests can override it.
 var MerkleRootForkHeight int64 = 6000
 
+// DataForkHeight is the block height at which transaction Data fields and
+// dlt1-prefixed checksummed addresses are activated. This is a consensus-
+// breaking hard fork: all nodes must upgrade before this height.
+// This is a var (not const) so that tests can override it.
+var DataForkHeight int64 = 6300
+
+// MaxTransactionDataSize is the maximum allowed size of the Data field in bytes
+const MaxTransactionDataSize = 256
+
 // Difficulty adjustment constants
 const (
 	// BlocksPerAdjustment is how often difficulty adjusts (legacy, kept for compatibility)
@@ -1252,16 +1261,23 @@ func VerifyTransactionSignature(tx *Transaction) error {
 	}
 
 	// Recreate the signed data with chain ID for replay protection (shannon #11)
-	// Try new format (with fee) first, then old format (without fee), then legacy (no chain ID)
-	txDataWithFee := fmt.Sprintf("%s:%s%s%d%d%d", NetworkName, tx.From, tx.To, tx.Amount, tx.Fee, tx.Timestamp)
-
+	// Try formats in order: with-data → with-fee → pre-fee → legacy
 	// Decode signature
 	sigBytes, err := hex.DecodeString(tx.Signature)
 	if err != nil {
 		return fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
-	// Verify signature - try new format with fee first
+	// Try with-data format first (post-DataForkHeight)
+	if tx.Data != "" {
+		txDataWithData := fmt.Sprintf("%s:%s%s%d%d%d:%s", NetworkName, tx.From, tx.To, tx.Amount, tx.Fee, tx.Timestamp, tx.Data)
+		if mode3.Verify(&pk, []byte(txDataWithData), sigBytes) {
+			return nil
+		}
+	}
+
+	// Try current format (with fee, no data)
+	txDataWithFee := fmt.Sprintf("%s:%s%s%d%d%d", NetworkName, tx.From, tx.To, tx.Amount, tx.Fee, tx.Timestamp)
 	if !mode3.Verify(&pk, []byte(txDataWithFee), sigBytes) {
 		// Fallback to pre-fee format (chain ID but no fee) for existing chain transactions
 		txDataNoFee := fmt.Sprintf("%s:%s%s%d%d", NetworkName, tx.From, tx.To, tx.Amount, tx.Timestamp)
@@ -1277,8 +1293,15 @@ func VerifyTransactionSignature(tx *Transaction) error {
 	return nil
 }
 
-// VerifyAddressMatchesPublicKey derives the address from the public key and compares
+// VerifyAddressMatchesPublicKey derives the address from the public key and compares.
+// Accepts both old (40-char hex) and new (dlt1-prefixed 48-char) address formats.
 func VerifyAddressMatchesPublicKey(address, publicKeyHex string) error {
+	// Normalize address to raw 40-char hex
+	rawAddress, err := NormalizeAddress(address)
+	if err != nil {
+		return fmt.Errorf("invalid address format: %w", err)
+	}
+
 	// Decode hex-encoded public key
 	pubKeyBytes, err := hex.DecodeString(publicKeyHex)
 	if err != nil {
@@ -1289,18 +1312,34 @@ func VerifyAddressMatchesPublicKey(address, publicKeyHex string) error {
 	hash := sha256.Sum256(pubKeyBytes)
 	derivedAddress := hex.EncodeToString(hash[:])[:40]
 
-	if derivedAddress != address {
-		return fmt.Errorf("address %s does not match public key (expected %s)", address, derivedAddress)
+	if derivedAddress != rawAddress {
+		return fmt.Errorf("address %s does not match public key (expected %s)", rawAddress, derivedAddress)
 	}
 
 	return nil
 }
 
-// validateTransaction checks if a transaction is valid
+// validateTransaction checks if a transaction is valid.
+// Normalizes dlt1-prefixed addresses to raw 40-char hex for internal storage.
 func validateTransaction(tx *Transaction) error {
 	if tx.From == "" || tx.To == "" {
 		return fmt.Errorf("transaction must include from and to address")
 	}
+
+	// Normalize addresses: accept both dlt1-prefixed and raw hex
+	if tx.From != "SYSTEM" {
+		normalizedFrom, err := NormalizeAddress(tx.From)
+		if err != nil {
+			return fmt.Errorf("invalid from address: %w", err)
+		}
+		tx.From = normalizedFrom
+	}
+
+	normalizedTo, err := NormalizeAddress(tx.To)
+	if err != nil {
+		return fmt.Errorf("invalid to address: %w", err)
+	}
+	tx.To = normalizedTo
 
 	if tx.Amount <= 0 {
 		return fmt.Errorf("transaction amount must be positive")
@@ -1314,6 +1353,11 @@ func validateTransaction(tx *Transaction) error {
 		return fmt.Errorf("transaction must be signed")
 	}
 
+	// Validate Data field
+	if len(tx.Data) > MaxTransactionDataSize {
+		return fmt.Errorf("transaction data exceeds maximum size of %d bytes", MaxTransactionDataSize)
+	}
+
 	// Skip signature verification for SYSTEM (coinbase) transactions
 	if tx.From != "SYSTEM" {
 		// Verify cryptographic signature
@@ -1325,6 +1369,20 @@ func validateTransaction(tx *Transaction) error {
 		if err := VerifyAddressMatchesPublicKey(tx.From, tx.PublicKey); err != nil {
 			return fmt.Errorf("address verification failed: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// validateTransactionForBlock validates a transaction in the context of a specific block height.
+// Before DataForkHeight, transactions with non-empty Data are rejected.
+func validateTransactionForBlock(tx *Transaction, blockHeight int64) error {
+	if err := validateTransaction(tx); err != nil {
+		return err
+	}
+
+	if tx.Data != "" && blockHeight < DataForkHeight {
+		return fmt.Errorf("transaction data field not allowed before fork height %d", DataForkHeight)
 	}
 
 	return nil
@@ -1576,8 +1634,8 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 			continue
 		}
 
-		// Basic validation (includes signature verification and fee check)
-		if err := validateTransaction(tx); err != nil {
+		// Basic validation (includes signature verification, fee check, and fork-aware data check)
+		if err := validateTransactionForBlock(tx, block.Index); err != nil {
 			return fmt.Errorf("invalid transaction in block %d: %v", block.Index, err)
 		}
 

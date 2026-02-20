@@ -26,15 +26,20 @@ const (
 	// MaxInvPerMessage is the maximum inventory items per Inv message
 	MaxInvPerMessage = 50000
 
-	// UserAgent identifies this node implementation
-	UserAgent = "/Dilithium:" + Version + "/"
-
 	// PingInterval is how often to send ping messages
 	PingInterval = 2 * time.Minute
 
 	// PingTimeout is how long to wait for a pong response
 	PingTimeout = 30 * time.Second
 )
+
+// UserAgent identifies this node implementation (variable to allow ship name)
+var UserAgent = "/Dilithium:" + Version + "/"
+
+// SetShipName updates the UserAgent to include a ship name
+func SetShipName(name string) {
+	UserAgent = "/Dilithium:" + Version + "/" + name + "/"
+}
 
 // ============================================================================
 // MESSAGE TYPES

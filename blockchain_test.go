@@ -608,3 +608,69 @@ func TestChainValidation(t *testing.T) {
 		t.Fatal("chain should be invalid after corruption")
 	}
 }
+
+func TestDataForkHeight(t *testing.T) {
+	t.Parallel()
+	// Save and restore original fork height
+	origFork := DataForkHeight
+	defer func() { DataForkHeight = origFork }()
+	DataForkHeight = 5
+
+	w, _ := NewWallet()
+
+	// Transaction with data before fork height should be rejected
+	tx := NewTransaction(w.Address, "recipient", 100, 10000)
+	tx.Data = "test memo"
+	tx.Sign(w)
+
+	if err := validateTransactionForBlock(tx, 4); err == nil {
+		t.Fatal("expected error for data transaction before fork height")
+	}
+
+	// Transaction with data at fork height should be accepted
+	if err := validateTransactionForBlock(tx, 5); err != nil {
+		t.Fatalf("expected success for data transaction at fork height: %v", err)
+	}
+
+	// Transaction with data after fork height should be accepted
+	if err := validateTransactionForBlock(tx, 10); err != nil {
+		t.Fatalf("expected success for data transaction after fork height: %v", err)
+	}
+
+	// Transaction without data should be accepted at any height
+	txNoData := NewTransaction(w.Address, "recipient", 100, 10000)
+	txNoData.Sign(w)
+
+	if err := validateTransactionForBlock(txNoData, 1); err != nil {
+		t.Fatalf("expected success for no-data transaction before fork: %v", err)
+	}
+	if err := validateTransactionForBlock(txNoData, 10); err != nil {
+		t.Fatalf("expected success for no-data transaction after fork: %v", err)
+	}
+}
+
+func TestVerifySignatureWithData(t *testing.T) {
+	t.Parallel()
+	w, _ := NewWallet()
+
+	// Sign with data, verify succeeds
+	tx := NewTransaction(w.Address, "recipient", 500, 10000)
+	tx.Data = "payment for coffee"
+	tx.Sign(w)
+	if err := VerifyTransactionSignature(tx); err != nil {
+		t.Fatalf("verification should pass for tx with data: %v", err)
+	}
+
+	// Tamper with data, verify fails
+	tx.Data = "tampered"
+	if err := VerifyTransactionSignature(tx); err == nil {
+		t.Fatal("verification should fail for tampered data")
+	}
+
+	// Sign without data, verify succeeds (backward compat)
+	txNoData := NewTransaction(w.Address, "recipient", 500, 10000)
+	txNoData.Sign(w)
+	if err := VerifyTransactionSignature(txNoData); err != nil {
+		t.Fatalf("verification should pass for tx without data: %v", err)
+	}
+}

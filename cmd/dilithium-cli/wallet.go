@@ -145,7 +145,7 @@ func cmdInit(args []string) {
 	fmt.Println()
 	fmt.Printf("  Algorithm: CRYSTALS-Dilithium Mode3\n")
 	fmt.Printf("  Security:  192-bit (quantum-safe)\n")
-	fmt.Printf("  Address:   %s\n", address)
+	fmt.Printf("  Address:   %s\n", AddressToChecksummed(address))
 	fmt.Println()
 
 	if mnemonicPhrase != "" {
@@ -191,7 +191,7 @@ func cmdAddress(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Println(address)
+	fmt.Println(AddressToChecksummed(address))
 }
 
 // cmdWalletInfo shows detailed wallet information
@@ -228,7 +228,7 @@ func cmdWalletInfo(args []string) {
 	fmt.Println("========== WALLET INFO ==========")
 	fmt.Printf("Algorithm:    CRYSTALS-Dilithium Mode3\n")
 	fmt.Printf("Security:     192-bit (quantum-safe)\n")
-	fmt.Printf("Address:      %s\n", address)
+	fmt.Printf("Address:      %s\n", AddressToChecksummed(address))
 	fmt.Printf("Encrypted:    %s\n", encrypted)
 	fmt.Printf("Location:     %s\n", *walletDir)
 	fmt.Printf("Private Key:  %s\n", privateKeyPath)
@@ -272,7 +272,7 @@ func cmdWalletExport(args []string) {
 
 	fmt.Println()
 	fmt.Println("========== WALLET EXPORT ==========")
-	fmt.Printf("Address: %s\n", address)
+	fmt.Printf("Address: %s\n", AddressToChecksummed(address))
 	fmt.Println()
 	fmt.Println("Private Key (KEEP SECRET!):")
 	fmt.Println(string(privateKeyData))
@@ -391,7 +391,7 @@ func cmdWalletRestore(args []string) {
 	fmt.Println("       WALLET RESTORED SUCCESSFULLY")
 	fmt.Println("========================================")
 	fmt.Println()
-	fmt.Printf("  Address: %s\n", address)
+	fmt.Printf("  Address: %s\n", AddressToChecksummed(address))
 	fmt.Printf("  Location: %s\n", *walletDir)
 	fmt.Println()
 	fmt.Println("========================================")
@@ -444,7 +444,7 @@ func showKeyInfo(keyFile string) {
 	fmt.Println("\n========== KEY INFO ==========")
 	fmt.Printf("Algorithm:  CRYSTALS-Dilithium Mode3\n")
 	fmt.Printf("Security:   192-bit (quantum-safe)\n")
-	fmt.Printf("Address:    %s\n", address)
+	fmt.Printf("Address:    %s\n", AddressToChecksummed(address))
 	fmt.Printf("Key File:   %s\n", keyFile)
 	fmt.Println("===============================")
 }

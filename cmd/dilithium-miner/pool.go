@@ -529,6 +529,8 @@ func (p *Pool) fetchPendingTxs() []*Transaction {
 			From:      getString(txMap, "from"),
 			To:        getString(txMap, "to"),
 			Amount:    int64(getFloat(txMap, "amount")),
+			Fee:       int64(getFloat(txMap, "fee")),
+			Data:      getString(txMap, "data"),
 			Timestamp: int64(getFloat(txMap, "timestamp")),
 			Signature: getString(txMap, "signature"),
 			PublicKey: getString(txMap, "public_key"),

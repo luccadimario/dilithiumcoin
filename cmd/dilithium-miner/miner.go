@@ -84,6 +84,7 @@ type Transaction struct {
 	To        string `json:"to"`
 	Amount    int64  `json:"amount"`
 	Fee       int64  `json:"fee,omitempty"`
+	Data      string `json:"data,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
 	PublicKey string `json:"public_key,omitempty"`
@@ -269,6 +270,7 @@ func (m *Miner) getPendingTransactions() []*Transaction {
 			To:        getString(txMap, "to"),
 			Amount:    int64(getFloat(txMap, "amount")),
 			Fee:       int64(getFloat(txMap, "fee")),
+			Data:      getString(txMap, "data"),
 			Timestamp: int64(getFloat(txMap, "timestamp")),
 			Signature: getString(txMap, "signature"),
 			PublicKey: getString(txMap, "public_key"),

@@ -70,7 +70,7 @@ func (cm *CensusManager) Sign(data []byte) []byte {
 func (cm *CensusManager) Start() {
 	go cm.announcementLoop()
 	go cm.cleanupLoop()
-	fmt.Println("Census manager started")
+	fmt.Println("Census manager started — Scanning for life forms...")
 }
 
 // Stop shuts down census goroutines.
