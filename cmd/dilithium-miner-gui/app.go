@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const MinerGUIVersion = "4.2.0"
+const MinerGUIVersion = "4.2.1"
 
 // MinerStatus holds current mining state for the frontend
 type MinerStatus struct {
