@@ -230,7 +230,8 @@ type Blockchain struct {
 	totalTxCache       int              // cached total transaction count
 
 	// Persistence
-	store *ChainStore // nil = no persistence (tests)
+	store            *ChainStore // nil = no persistence (tests)
+	persistRequired  bool        // true once SetStore is called — blocks MUST be persisted
 }
 
 // NewBlockchain initializes a new blockchain with genesis block
@@ -246,8 +247,11 @@ func NewBlockchain(difficulty int) *Blockchain {
 
 // SetStore attaches a ChainStore for disk persistence.
 // If the store contains a saved chain, it replaces the in-memory chain.
+// Once called, persistence becomes mandatory — AppendBlock will fail if
+// the store is nil or write fails, preventing silent data loss.
 func (bc *Blockchain) SetStore(store *ChainStore) error {
 	bc.store = store
+	bc.persistRequired = true
 
 	blocks, err := store.LoadChain()
 	if err != nil {
@@ -269,12 +273,17 @@ func (bc *Blockchain) SetStore(store *ChainStore) error {
 	return nil
 }
 
-// persistBlock saves a single block to disk (if store is set).
+// persistBlock saves a single block to disk.
 // Returns an error if the block could not be written — callers MUST NOT
 // add the block to the in-memory chain if this returns non-nil.
+// If SetStore was called (production), a nil store is a fatal error.
+// If SetStore was never called (tests), a nil store silently succeeds.
 func (bc *Blockchain) persistBlock(block *Block) error {
 	if bc.store == nil {
-		return nil
+		if bc.persistRequired {
+			return fmt.Errorf("chain store is nil after SetStore — block %d cannot be persisted (data loss risk)", block.Index)
+		}
+		return nil // Test mode: no store configured
 	}
 	if err := bc.store.SaveBlock(block); err != nil {
 		return fmt.Errorf("failed to persist block %d: %w", block.Index, err)
@@ -296,13 +305,19 @@ func (bc *Blockchain) AppendBlock(block *Block) error {
 }
 
 // persistChainFrom saves all blocks from startIndex onward and prunes orphans.
-func (bc *Blockchain) persistChainFrom(startIndex int) {
+// Returns an error if persistence fails — callers MUST handle this to avoid
+// in-memory chain diverging from on-disk chain.
+func (bc *Blockchain) persistChainFrom(startIndex int) error {
 	if bc.store == nil {
-		return
+		if bc.persistRequired {
+			return fmt.Errorf("chain store is nil after SetStore — cannot persist chain from index %d", startIndex)
+		}
+		return nil // Test mode
 	}
 	if err := bc.store.SaveChain(bc.Blocks, startIndex); err != nil {
-		fmt.Printf("WARNING: Failed to persist chain from index %d: %v\n", startIndex, err)
+		return fmt.Errorf("failed to persist chain from index %d: %w", startIndex, err)
 	}
+	return nil
 }
 
 // AddTransaction adds a transaction to the mempool
@@ -585,10 +600,11 @@ func (bc *Blockchain) GetCurrentDifficulty() int {
 	return difficultyBitsToHexDigits(bc.GetCurrentDifficultyBits())
 }
 
-// GetCurrentDifficultyBits returns the bit-based difficulty for the next block
+// GetCurrentDifficultyBits returns the bit-based difficulty for the next block.
+// Uses a write lock because GetCurrentDifficultyBitsLocked may cache difficulty state.
 func (bc *Blockchain) GetCurrentDifficultyBits() int {
-	bc.mutex.RLock()
-	defer bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 	return bc.GetCurrentDifficultyBitsLocked()
 }
 
@@ -1290,6 +1306,10 @@ func validateTransaction(tx *Transaction) error {
 		return fmt.Errorf("transaction amount must be positive")
 	}
 
+	if tx.Fee < 0 {
+		return fmt.Errorf("transaction fee must not be negative")
+	}
+
 	if tx.Signature == "" {
 		return fmt.Errorf("transaction must be signed")
 	}
@@ -1314,10 +1334,11 @@ func validateTransaction(tx *Transaction) error {
 // BALANCE & REWARD FUNCTIONS
 // ============================================================================
 
-// GetBalance calculates the confirmed balance using the cache (shannon #19)
+// GetBalance calculates the confirmed balance using the cache (shannon #19).
+// Uses a write lock because ensureBalanceCache may rebuild the cache.
 func (bc *Blockchain) GetBalance(address string) int64 {
-	bc.mutex.RLock()
-	defer bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 	return bc.getBalanceLocked(address)
 }
 
@@ -1327,10 +1348,11 @@ func (bc *Blockchain) getBalanceLocked(address string) int64 {
 	return bc.balanceCache[address]
 }
 
-// GetAvailableBalance returns balance minus pending outgoing transactions
+// GetAvailableBalance returns balance minus pending outgoing transactions.
+// Uses a write lock because ensureBalanceCache may rebuild the cache.
 func (bc *Blockchain) GetAvailableBalance(address string) int64 {
-	bc.mutex.RLock()
-	defer bc.mutex.RUnlock()
+	bc.mutex.Lock()
+	defer bc.mutex.Unlock()
 
 	balance := bc.getBalanceLocked(address)
 
@@ -1413,12 +1435,13 @@ func (bc *Blockchain) ensureBalanceCache() {
 	bc.balanceCacheHeight = height
 }
 
-// GetTotalTransactions returns the total transaction count using the cache
+// GetTotalTransactions returns the total transaction count using the cache.
+// Uses a write lock because ensureBalanceCache may rebuild the cache.
 func (bc *Blockchain) GetTotalTransactions() int {
-	bc.mutex.RLock()
+	bc.mutex.Lock()
 	bc.ensureBalanceCache()
 	total := bc.totalTxCache
-	bc.mutex.RUnlock()
+	bc.mutex.Unlock()
 	return total
 }
 
@@ -1602,6 +1625,31 @@ func (bc *Blockchain) clearMinedTransactions(minedTxs []*Transaction) {
 	}
 
 	// Rebuild pending transactions from remaining mempool
+	bc.PendingTransactions = make([]*Transaction, 0, len(bc.Mempool))
+	for _, tx := range bc.Mempool {
+		bc.PendingTransactions = append(bc.PendingTransactions, tx)
+	}
+}
+
+// revalidateMempool removes mempool transactions that conflict with the new chain after a reorg.
+// Must be called with bc.mutex held.
+func (bc *Blockchain) revalidateMempool(chain []*Block) {
+	// Collect all transaction signatures that are already mined in the new chain
+	minedSigs := make(map[string]bool)
+	for _, block := range chain {
+		for _, tx := range block.Transactions {
+			if tx.From != "SYSTEM" {
+				minedSigs[tx.Signature] = true
+			}
+		}
+	}
+
+	// Remove mined txs and rebuild pending list
+	for sig := range bc.Mempool {
+		if minedSigs[sig] {
+			delete(bc.Mempool, sig)
+		}
+	}
 	bc.PendingTransactions = make([]*Transaction, 0, len(bc.Mempool))
 	for _, tx := range bc.Mempool {
 		bc.PendingTransactions = append(bc.PendingTransactions, tx)

@@ -119,6 +119,22 @@ func main() {
 		node.CensusManager.Start()
 	}
 
+	// Start auto-updater (checks seed nodes for new versions)
+	var autoUpdater *AutoUpdater
+	if flags.AutoUpdate {
+		autoUpdater = NewAutoUpdater(config.Network.SeedNodes, func() {
+			node.StopAutoMining()
+			if node.CensusManager != nil {
+				node.CensusManager.Stop()
+			}
+			peerManager.SavePeerDatabase(config.PeersFilePath())
+			listener.Close()
+			peerManager.Stop()
+		})
+		autoUpdater.Start()
+		node.AutoUpdater = autoUpdater
+	}
+
 	// Start API server
 	if config.API.Enabled {
 		go node.StartAPI(config.API.Host, config.API.Port, flags.TLSCert, flags.TLSKey)
@@ -160,7 +176,7 @@ func main() {
 	printNodeInfo(node, peerManager)
 
 	// Wait for shutdown signal
-	waitForShutdown(node, peerManager, listener, config)
+	waitForShutdown(node, peerManager, listener, config, autoUpdater)
 }
 
 // Flags holds all command-line flags
@@ -178,6 +194,7 @@ type Flags struct {
 	NoSeeds    bool
 	TLSCert    string
 	TLSKey     string
+	AutoUpdate bool
 }
 
 // parseFlags parses command-line arguments
@@ -196,6 +213,7 @@ func parseFlags() Flags {
 	flag.BoolVar(&flags.NoSeeds, "no-seeds", false, "Don't connect to seed nodes (for local testing)")
 	flag.StringVar(&flags.TLSCert, "tls-cert", "", "TLS certificate file for HTTPS API")
 	flag.StringVar(&flags.TLSKey, "tls-key", "", "TLS key file for HTTPS API")
+	flag.BoolVar(&flags.AutoUpdate, "auto-update", false, "Enable automatic updates from seed node version checks")
 	flag.Parse()
 	return flags
 }
@@ -284,12 +302,17 @@ func setupNetworkAccess(node *Node, port string) {
 }
 
 // waitForShutdown waits for a shutdown signal and exits gracefully
-func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config *Config) {
+func waitForShutdown(node *Node, pm *PeerManager, listener net.Listener, config *Config, autoUpdater *AutoUpdater) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
 	fmt.Println("\nShutting down...")
+
+	// Stop auto-updater
+	if autoUpdater != nil {
+		autoUpdater.Stop()
+	}
 
 	// Stop mining
 	node.StopAutoMining()

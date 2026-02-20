@@ -471,6 +471,7 @@ func (pm *PeerManager) Start(localAddr *NetAddr) {
 	go pm.maintainPeers()
 	go pm.cleanupBanned()
 	go pm.rebroadcastMempool()
+	go pm.pruneAddressBook()
 
 	// Protocol v2 goroutines
 	gossipInterval := 10 * time.Minute
@@ -504,7 +505,7 @@ func (pm *PeerManager) Stop() {
 func (pm *PeerManager) HandleInbound(conn net.Conn) {
 	remoteAddr := conn.RemoteAddr().String()
 
-	// Check if banned
+	// Check if banned (IsBanned extracts host, so ephemeral ports don't bypass bans)
 	if pm.IsBanned(remoteAddr) {
 		fmt.Printf("Rejected banned peer: %s\n", remoteAddr)
 		conn.Close()
@@ -514,6 +515,15 @@ func (pm *PeerManager) HandleInbound(conn net.Conn) {
 	// Check inbound limit
 	if pm.InboundCount() >= pm.config.MaxInbound {
 		fmt.Printf("Rejecting connection from %s: inbound limit reached\n", remoteAddr)
+		conn.Close()
+		return
+	}
+
+	// Reject duplicate connections from the same IP.
+	// Inbound connections use ephemeral source ports, so we check by IP only.
+	remoteHost, _, _ := net.SplitHostPort(remoteAddr)
+	if pm.isConnectedByIP(remoteHost) {
+		fmt.Printf("Rejecting duplicate inbound from %s: already connected to this IP\n", remoteAddr)
 		conn.Close()
 		return
 	}
@@ -642,6 +652,23 @@ func (pm *PeerManager) handleVersion(peer *Peer, msg *VersionMsg) {
 	if msg.Nonce == pm.nonce {
 		fmt.Printf("Detected self-connection, disconnecting %s\n", peer.Addr)
 		peer.Stop()
+		return
+	}
+
+	// Check for duplicate connection to the same remote node (cross-direction dedup).
+	// If we already have a peer with this nonce, two connections exist between us.
+	// Keep the one where the higher nonce initiated (deterministic tiebreaker).
+	if existing := pm.getPeerByNonce(msg.Nonce); existing != nil {
+		// Deterministic: the node with the higher nonce keeps its outbound connection
+		if pm.nonce > msg.Nonce {
+			// We have the higher nonce — keep our outbound, drop this inbound
+			fmt.Printf("Duplicate connection to %s (already connected as %s), dropping inbound\n", peer.Addr, existing.Addr)
+			peer.Stop()
+		} else {
+			// They have the higher nonce — drop our outbound, keep this inbound
+			fmt.Printf("Duplicate connection to %s (already connected as %s), dropping outbound\n", peer.Addr, existing.Addr)
+			existing.Stop()
+		}
 		return
 	}
 
@@ -1442,19 +1469,38 @@ func (pm *PeerManager) attemptReorg(peer *Peer, peerBlocks []*Block) {
 		tempChain = append(tempChain, block)
 	}
 
-	// All validated — apply the reorg
+	// All validated — persist FIRST, then replace in-memory chain.
+	// This guarantees disk and memory stay in sync even if persist fails.
 	reorgDepth := int64(len(bc.Blocks)) - forkIdx - 1
 	fmt.Printf("[reorg] Reorganizing chain: removing %d blocks, adding %d blocks (fork at #%d)\n",
 		reorgDepth, len(peerBlocks), forkIdx)
 
-	// Replace our chain
-	bc.Blocks = tempChain
+	// Save the old chain in case we need to rollback
+	oldBlocks := bc.Blocks
 
-	// Persist: save new blocks and remove orphaned files
-	bc.persistChainFrom(int(forkIdx + 1))
+	// Replace in-memory chain and attempt persist
+	bc.Blocks = tempChain
+	if err := bc.persistChainFrom(int(forkIdx + 1)); err != nil {
+		// Persist failed — rollback to old chain to keep disk/memory consistent
+		fmt.Printf("[reorg] CRITICAL: Failed to persist reorg: %v — rolling back to previous chain\n", err)
+		bc.Blocks = oldBlocks
+		bc.mutex.Unlock()
+		peer.mutex.Lock()
+		peer.syncInProgress = false
+		peer.mutex.Unlock()
+		return
+	}
 
 	// Recalculate difficulty for the new chain tip
 	bc.recalcDifficultyFromChain()
+
+	// Invalidate balance cache — the old cache is for the pre-reorg chain
+	bc.balanceCache = nil
+	bc.balanceCacheHeight = 0
+
+	// Re-validate mempool: remove transactions that are now invalid on the new fork
+	// or that were already mined in the new fork's blocks
+	bc.revalidateMempool(tempChain)
 
 	newHeight := int64(len(bc.Blocks))
 	fmt.Printf("[reorg] Reorg complete. New chain height: %d\n", newHeight-1)
@@ -1713,8 +1759,20 @@ func (pm *PeerManager) GetAddresses(max int) []*NetAddr {
 			}
 
 			var portNum uint16
-			p, _ := strconv.ParseUint(port, 10, 16)
-		portNum = uint16(p)
+			if peer.Inbound && peer.ListenPort > 0 {
+				// For inbound peers, use their advertised listen port (from version msg),
+				// NOT the ephemeral TCP source port which is useless for other nodes.
+				portNum = peer.ListenPort
+			} else {
+				p, _ := strconv.ParseUint(port, 10, 16)
+				portNum = uint16(p)
+			}
+
+			// Skip inbound peers that never completed handshake (no listen port known)
+			if peer.Inbound && portNum == 0 {
+				continue
+			}
+
 			addrs = append(addrs, NewNetAddr(host, portNum, peer.Services))
 		}
 		if len(addrs) >= max {
@@ -1797,10 +1855,18 @@ func (pm *PeerManager) Unban(addr string) {
 	pm.bannedMutex.Unlock()
 }
 
-// IsBanned checks if a peer is banned
+// IsBanned checks if a peer is banned.
+// Bans are stored by host (IP only), so this extracts the host from addr
+// before checking, ensuring bans work for any port (including ephemeral ports).
 func (pm *PeerManager) IsBanned(addr string) bool {
+	// Extract host — bans are keyed by IP, not IP:port
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr // addr might already be just a host
+	}
+
 	pm.bannedMutex.RLock()
-	expiry, exists := pm.banned[addr]
+	expiry, exists := pm.banned[host]
 	pm.bannedMutex.RUnlock()
 
 	if !exists {
@@ -1872,6 +1938,40 @@ func (pm *PeerManager) isConnectedByListenPort(host string, port uint16) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+// getPeerByNonce returns an existing peer with the given remote nonce, or nil.
+// Used to detect duplicate connections to the same physical node.
+func (pm *PeerManager) getPeerByNonce(nonce uint64) *Peer {
+	pm.peerMutex.RLock()
+	defer pm.peerMutex.RUnlock()
+
+	for _, peer := range pm.peers {
+		if peer.Nonce == nonce && peer.Nonce != 0 {
+			return peer
+		}
+	}
+	return nil
+}
+
+// isConnectedByIP checks if we already have any connection (inbound or outbound)
+// to the given IP address, regardless of port.
+func (pm *PeerManager) isConnectedByIP(ip string) bool {
+	pm.peerMutex.RLock()
+	defer pm.peerMutex.RUnlock()
+
+	for _, peer := range pm.peers {
+		peerHost, _, err := net.SplitHostPort(peer.Addr)
+		if err != nil {
+			continue
+		}
+		peerHost = strings.TrimPrefix(peerHost, "[")
+		peerHost = strings.TrimSuffix(peerHost, "]")
+		if peerHost == ip {
+			return true
 		}
 	}
 	return false
@@ -2372,6 +2472,32 @@ func (pm *PeerManager) PruneDeadPeers(maxAge time.Duration) int {
 		fmt.Printf("Pruned %d dead peers\n", pruned)
 	}
 	return pruned
+}
+
+// pruneAddressBook periodically removes stale addresses from the address book
+func (pm *PeerManager) pruneAddressBook() {
+	pruneAge := 7 * 24 * time.Hour // default
+	pruneInterval := 1 * time.Hour // default
+	if pm.netConfig != nil {
+		if pm.netConfig.PruneAge > 0 {
+			pruneAge = pm.netConfig.PruneAge
+		}
+		if pm.netConfig.PruneInterval > 0 {
+			pruneInterval = pm.netConfig.PruneInterval
+		}
+	}
+
+	ticker := time.NewTicker(pruneInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-pm.stopCh:
+			return
+		case <-ticker.C:
+			pm.PruneDeadPeers(pruneAge)
+		}
+	}
 }
 
 // startPeerDatabaseSaver periodically saves the peer database
