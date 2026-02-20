@@ -924,6 +924,15 @@ func (pm *PeerManager) handleMessage(peer *Peer, msg *P2PMessage) {
 	case MsgTypeGetNodeAnnounce:
 		pm.handleGetNodeAnnounce(peer)
 
+	// Protocol v2: gossip-based update announcements
+	case MsgTypeUpdateAnnounce:
+		var ua UpdateAnnounceMsg
+		if err := msg.Decode(&ua); err == nil {
+			pm.handleUpdateAnnounce(peer, &ua)
+		} else {
+			fmt.Printf("Error decoding updateannounce from %s: %v\n", peer.Addr, err)
+		}
+
 	default:
 		fmt.Printf("Unknown message type %s from %s\n", msg.Type, peer.Addr)
 	}
@@ -1567,6 +1576,39 @@ func (pm *PeerManager) handleGetNodeAnnounce(peer *Peer) {
 	announcements := pm.census.GetAllAnnouncements()
 	for _, ann := range announcements {
 		peer.SendMessage(MsgTypeNodeAnnounce, ann)
+	}
+}
+
+// handleUpdateAnnounce processes a gossip-propagated update announcement.
+// All nodes validate and forward; only --auto-update nodes download.
+func (pm *PeerManager) handleUpdateAnnounce(peer *Peer, ua *UpdateAnnounceMsg) {
+	if pm.node.AutoUpdater == nil {
+		return
+	}
+
+	shouldForward := pm.node.AutoUpdater.ProcessUpdateAnnouncement(ua)
+	if !shouldForward {
+		return
+	}
+
+	// Forward to up to 5 random peers with TTL-1 (higher fan-out than census — updates are rare and important)
+	forwarded := *ua
+	forwarded.TTL--
+	if forwarded.TTL <= 0 {
+		return
+	}
+
+	peers := pm.GetActivePeers()
+	count := 0
+	for _, p := range peers {
+		if p.Addr == peer.Addr {
+			continue
+		}
+		p.SendMessage(MsgTypeUpdateAnnounce, &forwarded)
+		count++
+		if count >= 5 {
+			break
+		}
 	}
 }
 
