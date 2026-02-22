@@ -308,12 +308,14 @@ impl Miner {
             let full_blocks_len = (prefix.len() / 64) * 64;
             let tail = &prefix[full_blocks_len..];
 
-            // Compute max nonce to stay on single-block SHA-256 fast path
+            // Compute max nonce to stay on single-block SHA-256 fast path.
+            // Cap at i64::MAX because the Go node formats nonces as signed int64;
+            // the CUDA kernel formats as unsigned, so they must agree on the sign.
             let max_nonce_digits = 55_i32 - tail.len() as i32 - suffix.len() as i32;
             let max_nonce = if max_nonce_digits >= 1 {
-                10u64.pow(max_nonce_digits as u32) - 1
+                (10u64.pow(max_nonce_digits as u32) - 1).min(i64::MAX as u64)
             } else {
-                u64::MAX
+                i64::MAX as u64
             };
 
             // Create worker for this rotation
