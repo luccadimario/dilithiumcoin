@@ -238,6 +238,9 @@ type Blockchain struct {
 	balanceCacheHeight int              // chain height when cache was built
 	totalTxCache       int              // cached total transaction count
 
+	// Mined transaction index — prevents duplicate tx mining and mempool re-entry
+	MinedTxIndex map[string]bool // signature -> true for all non-SYSTEM txs in chain
+
 	// Persistence
 	store            *ChainStore // nil = no persistence (tests)
 	persistRequired  bool        // true once SetStore is called — blocks MUST be persisted
@@ -251,6 +254,7 @@ func NewBlockchain(difficulty int) *Blockchain {
 		DifficultyBits:      hexDigitsToDifficultyBits(difficulty),
 		PendingTransactions: make([]*Transaction, 0),
 		Mempool:             make(map[string]*Transaction),
+		MinedTxIndex:        make(map[string]bool),
 	}
 }
 
@@ -270,6 +274,7 @@ func (bc *Blockchain) SetStore(store *ChainStore) error {
 	if len(blocks) > 0 {
 		bc.Blocks = blocks
 		bc.recalcDifficultyFromChain()
+		bc.rebuildMinedTxIndex()
 		fmt.Printf("Loaded %d blocks from disk (height %d)\n", len(blocks), blocks[len(blocks)-1].Index)
 	} else {
 		// First run — save genesis block
@@ -309,6 +314,12 @@ func (bc *Blockchain) AppendBlock(block *Block) error {
 		return err
 	}
 	bc.Blocks = append(bc.Blocks, block)
+	// Index mined transaction signatures for duplicate prevention
+	for _, tx := range block.Transactions {
+		if tx.From != "SYSTEM" {
+			bc.MinedTxIndex[tx.Signature] = true
+		}
+	}
 	bc.clearMinedTransactions(block.Transactions)
 	return nil
 }
@@ -352,6 +363,11 @@ func (bc *Blockchain) AddTransactionIfNew(tx *Transaction) (bool, error) {
 	// Deduplicate by signature
 	if _, exists := bc.Mempool[tx.Signature]; exists {
 		return false, nil // Already in mempool
+	}
+
+	// Reject transactions that have already been mined into the blockchain
+	if bc.MinedTxIndex[tx.Signature] {
+		return false, nil // Already confirmed in a block
 	}
 
 	// Skip balance check for SYSTEM transactions (mining rewards)
@@ -1582,8 +1598,9 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 		return fmt.Errorf("block %d size %d bytes exceeds max 1MB", block.Index, len(blockJSON))
 	}
 
-	// Build balance map from previous blocks
+	// Build balance map and set of already-mined signatures from previous blocks
 	balances := make(map[string]int64)
+	minedSigs := make(map[string]bool)
 
 	for _, b := range previousBlocks {
 		for _, tx := range b.Transactions {
@@ -1592,6 +1609,7 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 			}
 			if tx.From != "" && tx.From != "SYSTEM" {
 				balances[tx.From] -= (tx.Amount + tx.Fee)
+				minedSigs[tx.Signature] = true
 			}
 		}
 	}
@@ -1633,6 +1651,12 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 		if tx.From == "SYSTEM" {
 			continue
 		}
+
+		// Reject duplicate transactions — same signature must not appear in multiple blocks
+		if minedSigs[tx.Signature] {
+			return fmt.Errorf("block %d contains already-mined transaction (sig %s…)", block.Index, tx.Signature[:16])
+		}
+		minedSigs[tx.Signature] = true // also catches duplicates within the same block
 
 		// Basic validation (includes signature verification, fee check, and fork-aware data check)
 		if err := validateTransactionForBlock(tx, block.Index); err != nil {
@@ -1712,6 +1736,20 @@ func (bc *Blockchain) revalidateMempool(chain []*Block) {
 	for _, tx := range bc.Mempool {
 		bc.PendingTransactions = append(bc.PendingTransactions, tx)
 	}
+}
+
+// rebuildMinedTxIndex rebuilds the MinedTxIndex from the current chain.
+// Must be called with bc.mutex held (or before concurrent access begins).
+func (bc *Blockchain) rebuildMinedTxIndex() {
+	bc.MinedTxIndex = make(map[string]bool)
+	for _, block := range bc.Blocks {
+		for _, tx := range block.Transactions {
+			if tx.From != "SYSTEM" {
+				bc.MinedTxIndex[tx.Signature] = true
+			}
+		}
+	}
+	fmt.Printf("Built mined tx index: %d confirmed transactions\n", len(bc.MinedTxIndex))
 }
 
 // RemoveTransactionsFromMempool removes specific transactions (used when receiving blocks)

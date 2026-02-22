@@ -3,7 +3,7 @@
 # Dilithium Build Script
 # Builds binaries for multiple platforms
 
-VERSION="3.4.0"
+VERSION="4.2.2"
 PROJECT_NAME="dilithium"
 
 # Parse flags

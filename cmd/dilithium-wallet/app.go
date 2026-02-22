@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-const WalletAppVersion = "4.2.1"
+const WalletAppVersion = "4.2.2"
 
 // Default paths
 var (

@@ -552,8 +552,12 @@ func TestMerkleRootForkWithRealTransactions(t *testing.T) {
 	}
 
 	// ---- MINE A FEW MORE POST-FORK BLOCKS WITH TRANSACTIONS ----
+	// Use different amounts each round so signatures are unique (same-second txs
+	// with identical fields produce identical signatures and are correctly rejected
+	// as duplicates after the duplicate-tx-prevention fix).
 	for i := 0; i < 3; i++ {
-		tx := NewTransaction(minerWallet.Address, alice.Address, int64(DLTUnit), fee)
+		amt := int64(DLTUnit) + int64(i) // 1.00000000, 1.00000001, 1.00000002 DLT
+		tx := NewTransaction(minerWallet.Address, alice.Address, amt, fee)
 		if err := tx.Sign(minerWallet); err != nil {
 			t.Fatalf("Sign tx error (round %d): %v", i, err)
 		}
@@ -579,7 +583,8 @@ func TestMerkleRootForkWithRealTransactions(t *testing.T) {
 	t.Logf("Final balances: Alice=%s, Bob=%s, Miner=%s",
 		FormatDLT(aliceBalance), FormatDLT(bobBalance), FormatDLT(bc.GetBalance(minerWallet.Address)))
 
-	expectedAlice := sendAmount + 3*DLTUnit // 10 DLT + 3*1 DLT
+	// 10 DLT + (1.00000000 + 1.00000001 + 1.00000002) = 13.00000003 DLT
+	expectedAlice := sendAmount + 3*DLTUnit + 3 // +3 for the int64(i) offsets (0+1+2)
 	if aliceBalance != expectedAlice {
 		t.Fatalf("alice balance = %d, want %d", aliceBalance, expectedAlice)
 	}

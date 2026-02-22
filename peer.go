@@ -1507,6 +1507,9 @@ func (pm *PeerManager) attemptReorg(peer *Peer, peerBlocks []*Block) {
 	bc.balanceCache = nil
 	bc.balanceCacheHeight = 0
 
+	// Rebuild mined tx index for the new chain
+	bc.rebuildMinedTxIndex()
+
 	// Re-validate mempool: remove transactions that are now invalid on the new fork
 	// or that were already mined in the new fork's blocks
 	bc.revalidateMempool(tempChain)
