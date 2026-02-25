@@ -13,7 +13,36 @@ import (
 	"time"
 )
 
-// Pool manages a mining pool server
+// ============================================================================
+// Stratum V1 JSON-RPC types
+// ============================================================================
+
+// StratumRequest is a JSON-RPC request from client to server
+type StratumRequest struct {
+	ID     interface{}   `json:"id"`
+	Method string        `json:"method"`
+	Params []interface{} `json:"params"`
+}
+
+// StratumResponse is a JSON-RPC response from server to client
+type StratumResponse struct {
+	ID     interface{} `json:"id"`
+	Result interface{} `json:"result"`
+	Error  interface{} `json:"error"`
+}
+
+// StratumNotification is a server-push notification (id is null)
+type StratumNotification struct {
+	ID     interface{}   `json:"id"`
+	Method string        `json:"method"`
+	Params []interface{} `json:"params"`
+}
+
+// ============================================================================
+// Pool server
+// ============================================================================
+
+// Pool manages a Stratum mining pool server
 type Pool struct {
 	nodeURL  string
 	address  string
@@ -28,25 +57,28 @@ type Pool struct {
 	nextID  int64
 
 	// Current work
-	currentWork   *PoolWork
-	workMu        sync.RWMutex
+	currentWork *PoolWork
+	currentJob  string // current job ID
+	workMu      sync.RWMutex
+	nextJobID   int64
 
 	// Stats
-	blocksFound   int64
-	totalShares   int64
-	startTime     time.Time
+	blocksFound int64
+	totalShares int64
+	startTime   time.Time
 }
 
 // PoolWorker represents a connected pool worker
 type PoolWorker struct {
-	id       int64
-	conn     net.Conn
-	encoder  *json.Encoder
-	address  string  // Worker's payout address
-	shares   int64
-	earnings int64   // Accumulated earnings in DLT units
-	hashrate float64
-	mu       sync.Mutex
+	id         int64
+	conn       net.Conn
+	address    string // Worker's payout address
+	subscribed bool
+	authorized bool
+	agent      string // mining software agent string
+	shares     int64
+	earnings   int64 // Accumulated earnings in DLT units
+	mu         sync.Mutex
 }
 
 // PoolWork holds the current work template for distribution
@@ -54,26 +86,7 @@ type PoolWork struct {
 	Template     *BlockTemplate `json:"template"`
 	ShareBits    int            `json:"share_bits"`
 	Transactions []*Transaction `json:"transactions"`
-}
-
-// PoolMessage is the JSON-over-TCP protocol message
-type PoolMessage struct {
-	Type     string          `json:"type"`
-	Template *BlockTemplate  `json:"template,omitempty"`
-	ShareBits int            `json:"share_bits,omitempty"`
-	Nonce    int64           `json:"nonce,omitempty"`
-	Hash     string          `json:"hash,omitempty"`
-	Block    *Block          `json:"block,omitempty"`
-	Txs      []*Transaction  `json:"transactions,omitempty"`
-	Workers  int             `json:"workers,omitempty"`
-	Hashrate string          `json:"hashrate,omitempty"`
-	Found    int64           `json:"blocks_found,omitempty"`
-	Shares   int64           `json:"your_shares,omitempty"`
-	Earnings string          `json:"your_earnings,omitempty"`
-	PoolFee  string          `json:"pool_fee,omitempty"`
-	Address  string          `json:"address,omitempty"`
-	Threads  int             `json:"threads,omitempty"`
-	Error    string          `json:"error,omitempty"`
+	JobID        string         `json:"job_id"`
 }
 
 // NewPool creates a new pool server
@@ -128,7 +141,7 @@ func (p *Pool) listen() {
 		fmt.Printf("Pool: Failed to listen on port %d: %v\n", p.port, err)
 		return
 	}
-	fmt.Printf("Pool: Listening on port %d\n", p.port)
+	fmt.Printf("Pool: Stratum server listening on port %d\n", p.port)
 
 	for {
 		conn, err := p.listener.Accept()
@@ -147,15 +160,19 @@ func (p *Pool) listen() {
 	}
 }
 
+func (p *Pool) generateJobID() string {
+	id := atomic.AddInt64(&p.nextJobID, 1)
+	return fmt.Sprintf("%x", id)
+}
+
 func (p *Pool) handleWorker(conn net.Conn) {
 	defer p.wg.Done()
 	defer conn.Close()
 
 	id := atomic.AddInt64(&p.nextID, 1)
 	worker := &PoolWorker{
-		id:      id,
-		conn:    conn,
-		encoder: json.NewEncoder(conn),
+		id:   id,
+		conn: conn,
 	}
 
 	p.mu.Lock()
@@ -165,7 +182,7 @@ func (p *Pool) handleWorker(conn net.Conn) {
 
 	fmt.Printf("Pool: Worker #%d connected from %s (total: %d)\n", id, conn.RemoteAddr(), workerCount)
 
-	// Read messages from worker
+	// Read JSON-RPC messages from worker
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	for scanner.Scan() {
@@ -175,19 +192,22 @@ func (p *Pool) handleWorker(conn net.Conn) {
 		default:
 		}
 
-		var msg PoolMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		var req StratumRequest
+		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 			fmt.Printf("Pool: Worker #%d bad message: %v (raw: %.100s)\n", id, err, scanner.Text())
 			continue
 		}
 
-		switch msg.Type {
-		case "register":
-			p.handleRegister(worker, &msg)
-		case "share":
-			p.handleShare(worker, &msg)
-		case "block":
-			p.handleBlockFound(worker, &msg)
+		switch req.Method {
+		case "mining.subscribe":
+			p.handleSubscribe(worker, &req)
+		case "mining.authorize":
+			p.handleAuthorize(worker, &req)
+		case "mining.submit":
+			p.handleSubmit(worker, &req)
+		default:
+			// Send error for unknown methods
+			p.sendResponse(worker, req.ID, nil, "unknown method")
 		}
 	}
 
@@ -199,98 +219,230 @@ func (p *Pool) handleWorker(conn net.Conn) {
 	fmt.Printf("Pool: Worker #%d disconnected (remaining: %d)\n", id, remaining)
 }
 
-func (p *Pool) handleRegister(worker *PoolWorker, msg *PoolMessage) {
-	if msg.Address == "" {
-		fmt.Printf("Pool: Worker #%d registration failed: no address provided\n", worker.id)
+// sendResponse sends a JSON-RPC response to a worker
+func (p *Pool) sendResponse(worker *PoolWorker, id interface{}, result interface{}, errMsg string) {
+	resp := StratumResponse{
+		ID:     id,
+		Result: result,
+	}
+	if errMsg != "" {
+		resp.Error = []interface{}{20, errMsg, nil}
+	}
+
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	worker.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	worker.conn.Write(data)
+}
+
+// sendNotification sends a JSON-RPC notification to a worker
+func (p *Pool) sendNotification(worker *PoolWorker, method string, params []interface{}) {
+	notif := StratumNotification{
+		ID:     nil,
+		Method: method,
+		Params: params,
+	}
+
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+
+	data, err := json.Marshal(notif)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	worker.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	worker.conn.Write(data)
+}
+
+func (p *Pool) handleSubscribe(worker *PoolWorker, req *StratumRequest) {
+	// Parse agent string if provided
+	if len(req.Params) > 0 {
+		if agent, ok := req.Params[0].(string); ok {
+			worker.mu.Lock()
+			worker.agent = agent
+			worker.mu.Unlock()
+		}
+	}
+
+	worker.mu.Lock()
+	worker.subscribed = true
+	worker.mu.Unlock()
+
+	// Response: [[["mining.set_difficulty", "sub1"], ["mining.notify", "sub2"]], "extranonce1", extranonce2_size]
+	subscriptions := []interface{}{
+		[]interface{}{"mining.set_difficulty", fmt.Sprintf("%x", worker.id)},
+		[]interface{}{"mining.notify", fmt.Sprintf("%x", worker.id)},
+	}
+	extranonce1 := fmt.Sprintf("%08x", worker.id)
+	extranonce2Size := 4
+
+	result := []interface{}{subscriptions, extranonce1, extranonce2Size}
+	p.sendResponse(worker, req.ID, result, "")
+
+	fmt.Printf("Pool: Worker #%d subscribed\n", worker.id)
+}
+
+func (p *Pool) handleAuthorize(worker *PoolWorker, req *StratumRequest) {
+	// Params: ["worker_address", "password"]
+	if len(req.Params) < 1 {
+		p.sendResponse(worker, req.ID, false, "missing worker address")
+		return
+	}
+
+	address, ok := req.Params[0].(string)
+	if !ok || address == "" {
+		p.sendResponse(worker, req.ID, false, "invalid worker address")
 		return
 	}
 
 	worker.mu.Lock()
-	worker.address = msg.Address
+	worker.address = address
+	worker.authorized = true
 	worker.mu.Unlock()
 
-	fmt.Printf("Pool: Worker #%d registered with address %s\n", worker.id, msg.Address)
+	p.sendResponse(worker, req.ID, true, "")
 
-	// Send current work after registration
+	fmt.Printf("Pool: Worker #%d authorized with address %s\n", worker.id, address)
+
+	// Send current work after authorization
 	p.workMu.RLock()
 	work := p.currentWork
 	p.workMu.RUnlock()
 
 	if work != nil {
-		p.sendWork(worker, work)
+		p.sendMiningWork(worker, work)
 	}
 }
 
-func (p *Pool) handleShare(worker *PoolWorker, msg *PoolMessage) {
-	// Verify worker is registered
+func (p *Pool) handleSubmit(worker *PoolWorker, req *StratumRequest) {
+	// Params: ["worker_address", "job_id", nonce, "hash"]
 	worker.mu.Lock()
-	if worker.address == "" {
+	if !worker.authorized {
 		worker.mu.Unlock()
-		fmt.Printf("Pool: Worker #%d share rejected: not registered\n", worker.id)
+		p.sendResponse(worker, req.ID, false, "not authorized")
 		return
 	}
 	worker.mu.Unlock()
 
-	// Verify share meets share difficulty
+	if len(req.Params) < 4 {
+		p.sendResponse(worker, req.ID, false, "invalid params")
+		return
+	}
+
+	// Parse params
+	jobID, _ := req.Params[1].(string)
+	var nonce int64
+	switch v := req.Params[2].(type) {
+	case float64:
+		nonce = int64(v)
+	case json.Number:
+		n, _ := v.Int64()
+		nonce = n
+	}
+	hash, _ := req.Params[3].(string)
+
+	if hash == "" {
+		p.sendResponse(worker, req.ID, false, "missing hash")
+		return
+	}
+
+	// Get current work
 	p.workMu.RLock()
 	work := p.currentWork
 	p.workMu.RUnlock()
 
 	if work == nil {
+		p.sendResponse(worker, req.ID, false, "no current work")
 		return
 	}
 
-	if meetsDifficultyBits(msg.Hash, work.ShareBits) {
-		count := atomic.AddInt64(&worker.shares, 1)
-		atomic.AddInt64(&p.totalShares, 1)
-		if count%10 == 1 {
-			fmt.Printf("Pool: Worker #%d share accepted (total: %d, hash: %s...)\n",
-				worker.id, count, msg.Hash[:16])
-		}
-	} else {
+	// Verify job ID matches current work
+	if jobID != work.JobID {
+		p.sendResponse(worker, req.ID, false, "stale job")
+		return
+	}
+
+	// Check if hash meets share difficulty
+	if !meetsDifficultyBits(hash, work.ShareBits) {
 		fmt.Printf("Pool: Worker #%d share REJECTED (bits: %d, hash: %s...)\n",
-			worker.id, work.ShareBits, msg.Hash[:16])
+			worker.id, work.ShareBits, hash[:16])
+		p.sendResponse(worker, req.ID, false, "low difficulty share")
+		return
+	}
+
+	// Accept share
+	count := atomic.AddInt64(&worker.shares, 1)
+	atomic.AddInt64(&p.totalShares, 1)
+	if count%10 == 1 {
+		fmt.Printf("Pool: Worker #%d share accepted (total: %d, hash: %s...)\n",
+			worker.id, count, hash[:16])
+	}
+	p.sendResponse(worker, req.ID, true, "")
+
+	// Check if hash also meets full block difficulty
+	useBits := work.Template.DifficultyBits > 0
+	var meetsBlock bool
+	if useBits {
+		meetsBlock = meetsDifficultyBits(hash, work.Template.DifficultyBits)
+	} else {
+		hashPrefix := strings.Repeat("0", work.Template.Difficulty)
+		meetsBlock = strings.HasPrefix(hash, hashPrefix)
+	}
+
+	if meetsBlock {
+		// Worker found a block! Reconstruct and submit it.
+		p.handleBlockSolution(worker, work, nonce, hash)
 	}
 }
 
-func (p *Pool) handleBlockFound(worker *PoolWorker, msg *PoolMessage) {
-	if msg.Block == nil {
-		return
+// handleBlockSolution reconstructs and submits a block when a worker finds one
+func (p *Pool) handleBlockSolution(worker *PoolWorker, work *PoolWork, nonce int64, hash string) {
+	// Reconstruct the block from the work template
+	var totalFees int64
+	for _, tx := range work.Transactions {
+		totalFees += tx.Fee
 	}
 
-	// Verify the block meets full difficulty
-	p.workMu.RLock()
-	work := p.currentWork
-	p.workMu.RUnlock()
-
-	if work == nil {
-		return
+	coinbase := &Transaction{
+		From:      "SYSTEM",
+		To:        p.address,
+		Amount:    work.Template.Reward + totalFees,
+		Timestamp: time.Now().Unix(),
+		Signature: fmt.Sprintf("coinbase-%d-%d", work.Template.Index, time.Now().UnixNano()),
 	}
 
-	useBits := work.Template.DifficultyBits > 0
-	var valid bool
-	if useBits {
-		valid = meetsDifficultyBits(msg.Block.Hash, work.Template.DifficultyBits)
-	} else {
-		hashPrefix := strings.Repeat("0", work.Template.Difficulty)
-		valid = strings.HasPrefix(msg.Block.Hash, hashPrefix)
-	}
+	txs := make([]*Transaction, 0, len(work.Transactions)+1)
+	txs = append(txs, coinbase)
+	txs = append(txs, work.Transactions...)
 
-	if !valid {
-		fmt.Printf("Pool: Worker #%d submitted invalid block\n", worker.id)
-		return
+	block := &Block{
+		Index:          work.Template.Index,
+		Timestamp:      time.Now().Unix(),
+		Transactions:   txs,
+		PreviousHash:   work.Template.PreviousHash,
+		Hash:           hash,
+		Nonce:          nonce,
+		Difficulty:     work.Template.Difficulty,
+		DifficultyBits: work.Template.DifficultyBits,
 	}
 
 	// Submit to node
-	if err := p.submitBlock(msg.Block); err != nil {
+	if err := p.submitBlock(block); err != nil {
 		fmt.Printf("Pool: Block submission failed: %v\n", err)
 		return
 	}
 
 	atomic.AddInt64(&p.blocksFound, 1)
-	fmt.Printf("Pool: Block #%d found by worker #%d!\n", msg.Block.Index, worker.id)
+	fmt.Printf("Pool: BLOCK #%d found by worker #%d! hash: %s\n", block.Index, worker.id, hash[:16])
 
-	// Calculate and distribute rewards
+	// Distribute rewards
 	p.distributeRewards(work.Template.Reward)
 
 	// Reset shares for next round
@@ -319,14 +471,12 @@ func (p *Pool) distributeRewards(blockReward int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Calculate each worker's payout
 	for _, w := range p.workers {
 		workerShares := atomic.LoadInt64(&w.shares)
 		if workerShares == 0 {
 			continue
 		}
 
-		// Proportional payout
 		workerPayout := (distributable * workerShares) / totalShares
 
 		w.mu.Lock()
@@ -402,47 +552,54 @@ func (p *Pool) workFetcher() {
 				shareBits = 4
 			}
 
+			jobID := p.generateJobID()
 			work := &PoolWork{
 				Template:     template,
 				ShareBits:    shareBits,
 				Transactions: txs,
+				JobID:        jobID,
 			}
 
 			p.workMu.Lock()
 			p.currentWork = work
+			p.currentJob = jobID
 			p.workMu.Unlock()
 
 			// Broadcast to all workers
 			p.mu.Lock()
 			for _, w := range p.workers {
-				p.sendWork(w, work)
+				p.sendMiningWork(w, work)
 			}
 			p.mu.Unlock()
 
-			fmt.Printf("Pool: Distributed work for block #%d to %d workers\n", template.Index, len(p.workers))
+			fmt.Printf("Pool: Distributed job %s for block #%d to %d workers\n", jobID, template.Index, len(p.workers))
 		}
 	}
 }
 
-func (p *Pool) sendWork(worker *PoolWorker, work *PoolWork) {
-	msg := PoolMessage{
-		Type:      "work",
-		Template:  work.Template,
-		ShareBits: work.ShareBits,
-		Txs:       work.Transactions,
-		Address:   p.address,
-	}
+// sendMiningWork sends mining.set_difficulty + mining.notify to a worker
+func (p *Pool) sendMiningWork(worker *PoolWorker, work *PoolWork) {
+	// Send mining.set_difficulty first
+	p.sendNotification(worker, "mining.set_difficulty", []interface{}{work.ShareBits})
 
-	worker.mu.Lock()
-	defer worker.mu.Unlock()
+	// Serialize transactions for the notify message
+	txsJSON, _ := json.Marshal(work.Transactions)
 
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
+	// Send mining.notify
+	// Params: [job_id, block_index, prev_hash, difficulty, difficulty_bits, reward, txs_json, pool_address, timestamp, clean_jobs]
+	params := []interface{}{
+		work.JobID,
+		work.Template.Index,
+		work.Template.PreviousHash,
+		work.Template.Difficulty,
+		work.Template.DifficultyBits,
+		work.Template.Reward,
+		string(txsJSON),
+		p.address,
+		time.Now().Unix(),
+		true, // clean_jobs
 	}
-	data = append(data, '\n')
-	worker.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	worker.conn.Write(data)
+	p.sendNotification(worker, "mining.notify", params)
 }
 
 func (p *Pool) fetchTemplate() (*BlockTemplate, error) {
@@ -562,7 +719,7 @@ func (p *Pool) statsPrinter() {
 			fmt.Printf("Pool Stats: %d workers | %d blocks found | %d shares | uptime %s\n",
 				workerCount, blocks, shares, uptime)
 
-			// Send stats to all workers
+			// Send pool.stats notification to all workers
 			p.mu.Lock()
 			for _, w := range p.workers {
 				w.mu.Lock()
@@ -570,20 +727,14 @@ func (p *Pool) statsPrinter() {
 				workerEarnings := w.earnings
 				w.mu.Unlock()
 
-				msg := PoolMessage{
-					Type:     "stats",
-					Workers:  workerCount,
-					Found:    blocks,
-					Shares:   workerShares,
-					Earnings: formatDLT(workerEarnings),
-					PoolFee:  fmt.Sprintf("%.1f%%", p.fee),
+				params := []interface{}{
+					workerCount,
+					blocks,
+					workerShares,
+					formatDLT(workerEarnings),
+					fmt.Sprintf("%.1f%%", p.fee),
 				}
-				w.mu.Lock()
-				data, _ := json.Marshal(msg)
-				data = append(data, '\n')
-				w.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				w.conn.Write(data)
-				w.mu.Unlock()
+				p.sendNotification(w, "pool.stats", params)
 			}
 			p.mu.Unlock()
 		}

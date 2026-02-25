@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,28 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+var trekQuotes = []string{
+	"Make it so.",
+	"Engage!",
+	"Warp speed, Mr. Sulu!",
+	"Live long and prosper.",
+	"Resistance is futile.",
+	"To boldly go where no one has gone before.",
+	"The needs of the many outweigh the needs of the few.",
+	"I'm givin' her all she's got, Captain!",
+	"Beam me up, Scotty.",
+	"It's a good day to mine.",
+	"Set phasers to mine.",
+	"Second star to the right, and straight on 'til morning.",
+	"There are four lights!",
+	"Logic is the beginning of wisdom, not the end.",
+	"Infinite diversity in infinite combinations.",
+}
+
+func trekQuote() string {
+	return trekQuotes[rand.Intn(len(trekQuotes))]
+}
 
 // DLTUnit is the number of base units in 1 DLT
 const DLTUnit int64 = 100_000_000
@@ -322,6 +345,7 @@ func (m *Miner) mineBlock(template *BlockTemplate, pendingTxs []*Transaction) (*
 	}
 
 	useBits := template.DifficultyBits > 0
+	fmt.Printf(">> \"%s\" <<\n", trekQuote())
 	if useBits {
 		fmt.Printf("Mining block #%d (difficulty bits: %d, hex: %d, threads: %d)\n",
 			template.Index, template.DifficultyBits, template.Difficulty, m.threads)

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	AppVersion = "4.2.2"
+	AppVersion = "4.3.0"
 	AppName    = "dilithium-miner"
 )
 

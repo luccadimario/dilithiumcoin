@@ -7,12 +7,35 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+var trekQuotes = []string{
+	"Make it so.",
+	"Engage!",
+	"Warp speed, Mr. Sulu!",
+	"Live long and prosper.",
+	"Resistance is futile.",
+	"To boldly go where no one has gone before.",
+	"The needs of the many outweigh the needs of the few.",
+	"I'm givin' her all she's got, Captain!",
+	"Beam me up, Scotty.",
+	"It's a good day to mine.",
+	"Set phasers to mine.",
+	"Second star to the right, and straight on 'til morning.",
+	"There are four lights!",
+	"Logic is the beginning of wisdom, not the end.",
+	"Infinite diversity in infinite combinations.",
+}
+
+func trekQuote() string {
+	return trekQuotes[rand.Intn(len(trekQuotes))]
+}
 
 // Miner coordinates CPU or GPU workers to mine dilithium blocks.
 type Miner struct {
@@ -210,6 +233,7 @@ func (m *Miner) miningLoop() {
 			diffBits = template.Difficulty * 4
 		}
 
+		fmt.Printf(">> \"%s\" <<\n", trekQuote())
 		if m.useGPU {
 			fmt.Printf("[*] Mining block #%d | difficulty: %d bits (%d hex) | GPU device %d\n",
 				template.Index, template.DifficultyBits, template.Difficulty, m.gpuDevice)
