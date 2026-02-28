@@ -56,10 +56,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 		// Restrict CORS to known origins (shannon #2)
 		origin := r.Header.Get("Origin")
 		allowedOrigins := map[string]bool{
-			"https://dilithiumcoin.com":     true,
-			"https://www.dilithiumcoin.com": true,
-			"http://localhost:3000":          true,
-			"http://localhost:3001":          true,
+			"https://dilithiumcoin.com":           true,
+			"https://www.dilithiumcoin.com":       true,
+			"https://webminer.dilithiumcoin.com":  true,
+			"http://localhost:3000":                true,
+			"http://localhost:3001":                true,
+			"http://localhost:8080":                true,
 		}
 		if allowedOrigins[origin] {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
