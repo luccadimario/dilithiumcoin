@@ -49,6 +49,10 @@ func main() {
 	case "transaction", "tx":
 		handleTransaction(args)
 
+	// Contract commands
+	case "contract":
+		handleContract(args)
+
 	// Query commands
 	case "status":
 		cmdStatus(args)
@@ -145,6 +149,13 @@ func printUsage() {
 	fmt.Println("TRANSACTION COMMANDS:")
 	fmt.Println("  send <address> <amount>   Send DLT to an address")
 	fmt.Println("  tx sign [options]         Sign a transaction manually")
+	fmt.Println()
+	fmt.Println("CONTRACT COMMANDS:")
+	fmt.Println("  contract deploy              Deploy a smart contract")
+	fmt.Println("  contract call                Call a contract function")
+	fmt.Println("  contract query               Read-only contract query")
+	fmt.Println("  contract code                Get contract bytecode")
+	fmt.Println("  contract storage             Read contract storage slot")
 	fmt.Println()
 	fmt.Println("NETWORK COMMANDS:")
 	fmt.Println("  status                    Node status")

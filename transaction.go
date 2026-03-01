@@ -55,12 +55,23 @@ func ParseDLT(s string) (int64, error) {
 	return result, nil
 }
 
+type TxType uint8
+
+const (
+	TxTransfer TxType = 0
+	TxDeploy   TxType = 1
+	TxCall     TxType = 2
+)
+
 // Transaction represents a transaction in the blockchain
 type Transaction struct {
+	Type      TxType `json:"type"`
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Amount    int64  `json:"amount"`
 	Fee       int64  `json:"fee,omitempty"`
+	GasLimit  uint64 `json:"gas_limit,omitempty"`
+	GasPrice  int64  `json:"gas_price,omitempty"`
 	Data      string `json:"data,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 	Signature string `json:"signature"`
@@ -70,6 +81,7 @@ type Transaction struct {
 // NewTransaction creates a new transaction
 func NewTransaction(from string, to string, amount int64, fee int64) *Transaction {
 	return &Transaction{
+		Type:      TxTransfer,
 		From:      from,
 		To:        to,
 		Amount:    amount,
@@ -79,13 +91,31 @@ func NewTransaction(from string, to string, amount int64, fee int64) *Transactio
 	}
 }
 
+func NewContractTransaction(txType TxType, from string, to string, amount int64, gasLimit uint64, gasPrice int64, data string) *Transaction {
+	return &Transaction{
+		Type:      txType,
+		From:      from,
+		To:        to,
+		Amount:    amount,
+		Fee:       0,
+		GasLimit:  gasLimit,
+		GasPrice:  gasPrice,
+		Data:      data,
+		Timestamp: time.Now().Unix(),
+		Signature: "",
+	}
+}
+
+func BuildContractSigningData(tx *Transaction) string {
+	return fmt.Sprintf("%s:%d%s%s%d%d%d%d%d:%s", NetworkName, tx.Type, tx.From, tx.To, tx.Amount, tx.Fee, tx.GasLimit, tx.GasPrice, tx.Timestamp, tx.Data)
+}
+
 // Sign signs the transaction with a wallet
 func (t *Transaction) Sign(wallet *Wallet) error {
-	// Create transaction data string with chain ID for replay protection (shannon #11)
-	// Includes fee in signing data for fee commitment
-	// If Data field is non-empty, include it in the signing data
 	var txData string
-	if t.Data != "" {
+	if t.Type == TxDeploy || t.Type == TxCall {
+		txData = fmt.Sprintf("%s:%d%s%s%d%d%d%d%d:%s", NetworkName, t.Type, t.From, t.To, t.Amount, t.Fee, t.GasLimit, t.GasPrice, t.Timestamp, t.Data)
+	} else if t.Data != "" {
 		txData = fmt.Sprintf("%s:%s%s%d%d%d:%s", NetworkName, t.From, t.To, t.Amount, t.Fee, t.Timestamp, t.Data)
 	} else {
 		txData = fmt.Sprintf("%s:%s%s%d%d%d", NetworkName, t.From, t.To, t.Amount, t.Fee, t.Timestamp)

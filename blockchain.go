@@ -25,8 +25,16 @@ var MerkleRootForkHeight int64 = 6000
 // This is a var (not const) so that tests can override it.
 var DataForkHeight int64 = 6300
 
+// SmartContractForkHeight is the block height at which smart contract transactions
+// (Type 1 deploy, Type 2 call) are activated. This is a consensus-breaking hard fork.
+// This is a var (not const) so that tests can override it.
+var SmartContractForkHeight int64 = 50000
+
 // MaxTransactionDataSize is the maximum allowed size of the Data field in bytes
 const MaxTransactionDataSize = 256
+
+const MaxContractDeployDataSize = 24 * 1024
+const MaxContractCallDataSize = 8 * 1024
 
 // Difficulty adjustment constants
 const (
@@ -244,6 +252,9 @@ type Blockchain struct {
 	// Persistence
 	store            *ChainStore // nil = no persistence (tests)
 	persistRequired  bool        // true once SetStore is called — blocks MUST be persisted
+
+	// Smart contracts
+	StateDB *StateDB
 }
 
 // NewBlockchain initializes a new blockchain with genesis block
@@ -320,6 +331,23 @@ func (bc *Blockchain) AppendBlock(block *Block) error {
 			bc.MinedTxIndex[tx.Signature] = true
 		}
 	}
+
+	// Execute contract transactions and persist state
+	if bc.StateDB != nil {
+		hasContracts := false
+		for _, tx := range block.Transactions {
+			if tx.Type == TxDeploy || tx.Type == TxCall {
+				bc.executeContractTx(tx, block, nil)
+				hasContracts = true
+			}
+		}
+		if hasContracts {
+			if err := bc.StateDB.Commit(); err != nil {
+				fmt.Printf("Warning: failed to commit contract state for block %d: %v\n", block.Index, err)
+			}
+		}
+	}
+
 	bc.clearMinedTransactions(block.Transactions)
 	return nil
 }
@@ -353,7 +381,8 @@ func (bc *Blockchain) AddTransactionIfNew(tx *Transaction) (bool, error) {
 	}
 
 	// Enforce minimum transaction fee for new mempool transactions (not historical blocks)
-	if tx.From != "SYSTEM" && tx.Fee < MinTransactionFee {
+	// Contract transactions use gas-based fees (gasLimit * gasPrice) instead of the Fee field
+	if tx.From != "SYSTEM" && tx.Type == TxTransfer && tx.Fee < MinTransactionFee {
 		return false, fmt.Errorf("transaction fee %d below minimum %d (0.0001 DLT)", tx.Fee, MinTransactionFee)
 	}
 
@@ -413,9 +442,35 @@ func (bc *Blockchain) MinePendingTransactionsWithCancel(minerAddress string, can
 	blockReward := GetBlockReward(nextBlockHeight)
 
 	// Sum fees from all pending transactions
+	// For transfers: use the Fee field
+	// For contract txs: pre-execute to determine actual gasUsed, fee = gasUsed * gasPrice
+	blockTimestamp := time.Now().Unix()
 	var totalFees int64
+	preExecSnap := -1
+	if bc.StateDB != nil {
+		preExecSnap = bc.StateDB.Snapshot()
+	}
 	for _, tx := range bc.PendingTransactions {
-		totalFees += tx.Fee
+		switch tx.Type {
+		case TxTransfer:
+			totalFees += tx.Fee
+		case TxDeploy, TxCall:
+			if bc.StateDB != nil {
+				tempBlock := &Block{Index: nextBlockHeight, Timestamp: blockTimestamp}
+				receipt := bc.executeContractTx(tx, tempBlock, nil)
+				if receipt.Success {
+					totalFees += int64(receipt.GasUsed) * tx.GasPrice
+				} else {
+					totalFees += int64(tx.GasLimit) * tx.GasPrice
+				}
+			} else {
+				totalFees += int64(tx.GasLimit) * tx.GasPrice
+			}
+		}
+	}
+	// Revert pre-execution state changes — real execution happens in ValidateBlockTransactions
+	if bc.StateDB != nil && preExecSnap >= 0 {
+		bc.StateDB.RevertToSnapshot(preExecSnap)
 	}
 
 	// Create coinbase (mining reward) transaction
@@ -1284,6 +1339,15 @@ func VerifyTransactionSignature(tx *Transaction) error {
 		return fmt.Errorf("invalid signature encoding: %w", err)
 	}
 
+	// Try contract tx format first (Type 1 deploy or Type 2 call)
+	if tx.Type == TxDeploy || tx.Type == TxCall {
+		contractData := BuildContractSigningData(tx)
+		if mode3.Verify(&pk, []byte(contractData), sigBytes) {
+			return nil
+		}
+		return fmt.Errorf("signature verification failed")
+	}
+
 	// Try with-data format first (post-DataForkHeight)
 	if tx.Data != "" {
 		txDataWithData := fmt.Sprintf("%s:%s%s%d%d%d:%s", NetworkName, tx.From, tx.To, tx.Amount, tx.Fee, tx.Timestamp, tx.Data)
@@ -1338,8 +1402,17 @@ func VerifyAddressMatchesPublicKey(address, publicKeyHex string) error {
 // validateTransaction checks if a transaction is valid.
 // Normalizes dlt1-prefixed addresses to raw 40-char hex for internal storage.
 func validateTransaction(tx *Transaction) error {
-	if tx.From == "" || tx.To == "" {
-		return fmt.Errorf("transaction must include from and to address")
+	if tx.From == "" {
+		return fmt.Errorf("transaction must include from address")
+	}
+
+	// Type 1 (deploy) has empty To (contract address is derived)
+	if tx.Type == TxDeploy {
+		if tx.To != "" {
+			return fmt.Errorf("deploy transaction must have empty 'to' field")
+		}
+	} else if tx.To == "" {
+		return fmt.Errorf("transaction must include to address")
 	}
 
 	// Normalize addresses: accept both dlt1-prefixed and raw hex
@@ -1351,14 +1424,20 @@ func validateTransaction(tx *Transaction) error {
 		tx.From = normalizedFrom
 	}
 
-	normalizedTo, err := NormalizeAddress(tx.To)
-	if err != nil {
-		return fmt.Errorf("invalid to address: %w", err)
+	if tx.To != "" {
+		normalizedTo, err := NormalizeAddress(tx.To)
+		if err != nil {
+			return fmt.Errorf("invalid to address: %w", err)
+		}
+		tx.To = normalizedTo
 	}
-	tx.To = normalizedTo
 
-	if tx.Amount <= 0 {
+	// Contract transactions can have Amount == 0 (just calling a function)
+	if tx.Type == TxTransfer && tx.Amount <= 0 {
 		return fmt.Errorf("transaction amount must be positive")
+	}
+	if (tx.Type == TxDeploy || tx.Type == TxCall) && tx.Amount < 0 {
+		return fmt.Errorf("transaction amount must not be negative")
 	}
 
 	if tx.Fee < 0 {
@@ -1369,19 +1448,46 @@ func validateTransaction(tx *Transaction) error {
 		return fmt.Errorf("transaction must be signed")
 	}
 
-	// Validate Data field
-	if len(tx.Data) > MaxTransactionDataSize {
-		return fmt.Errorf("transaction data exceeds maximum size of %d bytes", MaxTransactionDataSize)
+	// Validate gas fields for contract transactions
+	if tx.Type == TxDeploy || tx.Type == TxCall {
+		if tx.GasLimit == 0 {
+			return fmt.Errorf("contract transaction must have gas_limit > 0")
+		}
+		if tx.GasLimit > MaxGasLimit {
+			return fmt.Errorf("gas_limit %d exceeds maximum %d", tx.GasLimit, MaxGasLimit)
+		}
+		if tx.GasPrice < MinGasPrice {
+			return fmt.Errorf("gas_price %d below minimum %d", tx.GasPrice, MinGasPrice)
+		}
+	}
+
+	// Validate Data field size based on transaction type
+	switch tx.Type {
+	case TxTransfer:
+		if len(tx.Data) > MaxTransactionDataSize {
+			return fmt.Errorf("transaction data exceeds maximum size of %d bytes", MaxTransactionDataSize)
+		}
+	case TxDeploy:
+		if len(tx.Data) > MaxContractDeployDataSize*2 {
+			return fmt.Errorf("deploy data exceeds maximum size of %d bytes", MaxContractDeployDataSize)
+		}
+		if tx.Data == "" {
+			return fmt.Errorf("deploy transaction must include bytecode in data field")
+		}
+	case TxCall:
+		if len(tx.Data) > MaxContractCallDataSize*2 {
+			return fmt.Errorf("call data exceeds maximum size of %d bytes", MaxContractCallDataSize)
+		}
+	default:
+		return fmt.Errorf("unknown transaction type: %d", tx.Type)
 	}
 
 	// Skip signature verification for SYSTEM (coinbase) transactions
 	if tx.From != "SYSTEM" {
-		// Verify cryptographic signature
 		if err := VerifyTransactionSignature(tx); err != nil {
 			return fmt.Errorf("signature verification failed: %w", err)
 		}
 
-		// Verify the address matches the public key
 		if err := VerifyAddressMatchesPublicKey(tx.From, tx.PublicKey); err != nil {
 			return fmt.Errorf("address verification failed: %w", err)
 		}
@@ -1392,13 +1498,18 @@ func validateTransaction(tx *Transaction) error {
 
 // validateTransactionForBlock validates a transaction in the context of a specific block height.
 // Before DataForkHeight, transactions with non-empty Data are rejected.
+// Before SmartContractForkHeight, Type 1/2 transactions are rejected.
 func validateTransactionForBlock(tx *Transaction, blockHeight int64) error {
 	if err := validateTransaction(tx); err != nil {
 		return err
 	}
 
-	if tx.Data != "" && blockHeight < DataForkHeight {
+	if tx.Data != "" && tx.Type == TxTransfer && blockHeight < DataForkHeight {
 		return fmt.Errorf("transaction data field not allowed before fork height %d", DataForkHeight)
+	}
+
+	if (tx.Type == TxDeploy || tx.Type == TxCall) && blockHeight < SmartContractForkHeight {
+		return fmt.Errorf("smart contract transactions not allowed before fork height %d", SmartContractForkHeight)
 	}
 
 	return nil
@@ -1625,12 +1736,82 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 		return fmt.Errorf("block %d must have exactly 1 coinbase transaction, has %d", block.Index, coinbaseCount)
 	}
 
-	// Sum fees from non-coinbase transactions
+	// First pass: validate all transactions and compute gas fees
+	// Snapshot state before validation so contract execution doesn't persist
+	// (real state commit happens in AppendBlock)
+	var validationSnap int
+	if bc.StateDB != nil {
+		validationSnap = bc.StateDB.Snapshot()
+	}
+
 	var totalFees int64
+	var totalGasFees int64
+
 	for _, tx := range block.Transactions {
-		if tx.From != "SYSTEM" {
-			totalFees += tx.Fee
+		if tx.From == "SYSTEM" {
+			continue
 		}
+
+		// Reject duplicate transactions
+		if minedSigs[tx.Signature] {
+			return fmt.Errorf("block %d contains already-mined transaction (sig %s…)", block.Index, tx.Signature[:16])
+		}
+		minedSigs[tx.Signature] = true
+
+		if err := validateTransactionForBlock(tx, block.Index); err != nil {
+			return fmt.Errorf("invalid transaction in block %d: %v", block.Index, err)
+		}
+
+		switch tx.Type {
+		case TxTransfer:
+			totalCost := tx.Amount + tx.Fee
+			if balances[tx.From] < totalCost {
+				return fmt.Errorf("insufficient funds in block %d: %s has %s, needs %s (amount %s + fee %s)",
+					block.Index, tx.From, FormatDLT(balances[tx.From]), FormatDLT(totalCost),
+					FormatDLT(tx.Amount), FormatDLT(tx.Fee))
+			}
+			balances[tx.From] -= totalCost
+			balances[tx.To] += tx.Amount
+			totalFees += tx.Fee
+
+		case TxDeploy, TxCall:
+			gasCost := int64(tx.GasLimit) * tx.GasPrice
+			totalCost := tx.Amount + gasCost
+			if balances[tx.From] < totalCost {
+				return fmt.Errorf("insufficient funds in block %d: %s has %s, needs %s (amount %s + gas %s)",
+					block.Index, tx.From, FormatDLT(balances[tx.From]), FormatDLT(totalCost),
+					FormatDLT(tx.Amount), FormatDLT(gasCost))
+			}
+
+			// Pre-deduct full gas cost
+			balances[tx.From] -= totalCost
+
+			// Execute contract if StateDB is available
+			if bc.StateDB != nil {
+				receipt := bc.executeContractTx(tx, block, balances)
+				// Refund unused gas
+				refund := int64(tx.GasLimit-receipt.GasUsed) * tx.GasPrice
+				if receipt.Success {
+					balances[tx.From] += refund
+				} else {
+					// On failure, refund the value (it wasn't transferred) but consume all gas
+					balances[tx.From] += tx.Amount
+					refund = 0
+				}
+				actualGasFee := gasCost - refund
+				totalGasFees += actualGasFee
+			} else {
+				// No StateDB: treat full gas as fee (for validation without execution)
+				totalGasFees += gasCost
+			}
+		}
+	}
+
+	totalFees += totalGasFees
+
+	// Revert state changes from validation (AppendBlock will re-execute and commit)
+	if bc.StateDB != nil {
+		bc.StateDB.RevertToSnapshot(validationSnap)
 	}
 
 	// Verify coinbase amount matches expected block reward + fees
@@ -1645,37 +1826,6 @@ func (bc *Blockchain) ValidateBlockTransactions(block *Block, previousBlocks []*
 		}
 	}
 
-	// Now validate each transaction in the new block
-	for _, tx := range block.Transactions {
-		// Skip SYSTEM transactions (mining rewards) - already validated above
-		if tx.From == "SYSTEM" {
-			continue
-		}
-
-		// Reject duplicate transactions — same signature must not appear in multiple blocks
-		if minedSigs[tx.Signature] {
-			return fmt.Errorf("block %d contains already-mined transaction (sig %s…)", block.Index, tx.Signature[:16])
-		}
-		minedSigs[tx.Signature] = true // also catches duplicates within the same block
-
-		// Basic validation (includes signature verification, fee check, and fork-aware data check)
-		if err := validateTransactionForBlock(tx, block.Index); err != nil {
-			return fmt.Errorf("invalid transaction in block %d: %v", block.Index, err)
-		}
-
-		// Check sender has sufficient balance for amount + fee
-		totalCost := tx.Amount + tx.Fee
-		if balances[tx.From] < totalCost {
-			return fmt.Errorf("insufficient funds in block %d: %s has %s, needs %s (amount %s + fee %s)",
-				block.Index, tx.From, FormatDLT(balances[tx.From]), FormatDLT(totalCost),
-				FormatDLT(tx.Amount), FormatDLT(tx.Fee))
-		}
-
-		// Update balances: sender pays amount + fee, recipient gets amount only
-		balances[tx.From] -= totalCost
-		balances[tx.To] += tx.Amount
-	}
-
 	return nil
 }
 
@@ -1685,6 +1835,138 @@ func (bc *Blockchain) ValidateBlockTransactionsWithChain(block *Block) error {
 	defer bc.mutex.RUnlock()
 
 	return bc.ValidateBlockTransactions(block, bc.Blocks)
+}
+
+// executeContractTx runs a contract deploy or call and returns a receipt.
+func (bc *Blockchain) executeContractTx(tx *Transaction, block *Block, balances map[string]int64) *ContractReceipt {
+	context := &ExecutionContext{
+		Caller:          tx.From,
+		Origin:          tx.From,
+		Value:           tx.Amount,
+		GasPrice:        tx.GasPrice,
+		BlockHeight:     block.Index,
+		BlockTimestamp:  block.Timestamp,
+		DifficultyBits: block.getEffectiveDifficultyBits(),
+		GasLimit:        tx.GasLimit,
+		Depth:           0,
+	}
+
+	bytecodeHex := tx.Data
+	bytecode, err := hex.DecodeString(bytecodeHex)
+	if err != nil {
+		return &ContractReceipt{
+			TxSignature: tx.Signature,
+			GasUsed:     tx.GasLimit,
+			Success:     false,
+		}
+	}
+
+	snapshotID := bc.StateDB.Snapshot()
+
+	switch tx.Type {
+	case TxDeploy:
+		deployerNonce := bc.StateDB.GetDeployerNonce(tx.From)
+		contractAddress := DeriveContractAddress(tx.From, deployerNonce)
+		context.ContractAddress = contractAddress
+
+		deployGas := CalcDeployGas(len(bytecode))
+		if deployGas > tx.GasLimit {
+			bc.StateDB.RevertToSnapshot(snapshotID)
+			return &ContractReceipt{
+				TxSignature: tx.Signature,
+				GasUsed:     tx.GasLimit,
+				Success:     false,
+			}
+		}
+
+		remainingGas := tx.GasLimit - deployGas
+		result, runtimeCode := ExecuteDeployment(bc.StateDB, bytecode, context, remainingGas)
+
+		if result.Err != nil || result.Reverted || runtimeCode == nil {
+			bc.StateDB.RevertToSnapshot(snapshotID)
+			return &ContractReceipt{
+				TxSignature: tx.Signature,
+				GasUsed:     tx.GasLimit,
+				Success:     false,
+			}
+		}
+
+		if uint64(len(runtimeCode)) > MaxCodeSize {
+			bc.StateDB.RevertToSnapshot(snapshotID)
+			return &ContractReceipt{
+				TxSignature: tx.Signature,
+				GasUsed:     tx.GasLimit,
+				Success:     false,
+			}
+		}
+
+		contract := NewContractAccount(contractAddress, runtimeCode)
+		contract.Balance = tx.Amount
+		bc.StateDB.SetContract(contract)
+		bc.StateDB.IncrementDeployerNonce(tx.From)
+
+		totalGasUsed := deployGas + result.GasUsed
+		return &ContractReceipt{
+			TxSignature:     tx.Signature,
+			ContractAddress: contractAddress,
+			GasUsed:         totalGasUsed,
+			Success:         true,
+			ReturnData:      runtimeCode,
+			Logs:            result.Logs,
+		}
+
+	case TxCall:
+		context.ContractAddress = tx.To
+		context.Calldata = bytecode
+
+		callGas := CalcCallGas(len(bytecode))
+		if callGas > tx.GasLimit {
+			bc.StateDB.RevertToSnapshot(snapshotID)
+			return &ContractReceipt{
+				TxSignature: tx.Signature,
+				GasUsed:     tx.GasLimit,
+				Success:     false,
+			}
+		}
+
+		// Transfer value to contract
+		if tx.Amount > 0 {
+			currentBalance := bc.StateDB.GetContractBalance(tx.To)
+			bc.StateDB.SetContractBalance(tx.To, currentBalance+tx.Amount)
+		}
+
+		remainingGas := tx.GasLimit - callGas
+		result := ExecuteContract(bc.StateDB, tx.To, context, remainingGas)
+
+		if result.Err != nil || result.Reverted {
+			bc.StateDB.RevertToSnapshot(snapshotID)
+			gasUsed := tx.GasLimit
+			if result.Reverted {
+				gasUsed = callGas + result.GasUsed
+			}
+			return &ContractReceipt{
+				TxSignature: tx.Signature,
+				GasUsed:     gasUsed,
+				Success:     false,
+				ReturnData:  result.ReturnData,
+			}
+		}
+
+		totalGasUsed := callGas + result.GasUsed
+		return &ContractReceipt{
+			TxSignature: tx.Signature,
+			GasUsed:     totalGasUsed,
+			Success:     true,
+			ReturnData:  result.ReturnData,
+			Logs:        result.Logs,
+		}
+	}
+
+	return &ContractReceipt{
+		TxSignature: tx.Signature,
+		GasUsed:     tx.GasLimit,
+		Success:     false,
+	}
 }
 
 // clearMempool empties the pending transactions and mempool

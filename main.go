@@ -49,6 +49,7 @@ func main() {
 	if flags.Testnet {
 		DataForkHeight = 0
 		MerkleRootForkHeight = 0
+		SmartContractForkHeight = 0
 	}
 
 	// Print startup banner
@@ -96,6 +97,14 @@ func main() {
 		fmt.Printf("Failed to load chain from disk: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Setup smart contract state persistence
+	stateStore, err := NewStateStore(config.DataDir)
+	if err != nil {
+		fmt.Printf("Failed to create state store: %v\n", err)
+		os.Exit(1)
+	}
+	node.Blockchain.StateDB = NewStateDB(node.Blockchain, stateStore)
 
 	// Create peer manager
 	peerConfig := &PeerConfig{

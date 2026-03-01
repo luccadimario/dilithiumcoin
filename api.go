@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -124,6 +125,14 @@ func (n *Node) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/update/check", rateLimitMiddleware(readLimiter, n.handleUpdateCheck))
 	mux.HandleFunc("/admin/announce-update", rateLimitMiddleware(writeLimiter, n.handleAdminAnnounceUpdate))
 
+	// Smart contract endpoints
+	mux.HandleFunc("/contract/deploy", rateLimitMiddleware(writeLimiter, n.handleContractDeploy))
+	mux.HandleFunc("/contract/call", rateLimitMiddleware(writeLimiter, n.handleContractCall))
+	mux.HandleFunc("/contract/query", rateLimitMiddleware(readLimiter, n.handleContractQuery))
+	mux.HandleFunc("/contract/code", rateLimitMiddleware(readLimiter, n.handleContractCode))
+	mux.HandleFunc("/contract/storage", rateLimitMiddleware(readLimiter, n.handleContractStorage))
+	mux.HandleFunc("/contract/estimate-gas", rateLimitMiddleware(readLimiter, n.handleContractEstimateGas))
+
 	// Legacy endpoints (backwards compatibility)
 	mux.HandleFunc("/add-peer", rateLimitMiddleware(writeLimiter, n.handleAddPeerLegacy))
 }
@@ -153,6 +162,12 @@ func (n *Node) printAPIInfo(apiHost, apiPort string) {
 	fmt.Printf("  GET  /explorer/tx?hash=X  - Get transaction by hash\n")
 	fmt.Printf("  GET  /explorer/address?addr=X - Get address info\n")
 	fmt.Printf("  POST /admin/announce-update   - Trigger update announcement (seed nodes, localhost only)\n")
+	fmt.Printf("  POST /contract/deploy        - Deploy a smart contract\n")
+	fmt.Printf("  POST /contract/call          - Call a smart contract\n")
+	fmt.Printf("  POST /contract/query         - Read-only contract query\n")
+	fmt.Printf("  GET  /contract/code          - Get contract bytecode\n")
+	fmt.Printf("  GET  /contract/storage       - Read contract storage\n")
+	fmt.Printf("  POST /contract/estimate-gas  - Estimate gas for a call\n")
 	fmt.Println()
 }
 
@@ -662,10 +677,13 @@ func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 100*1024) // 100KB max for transactions
 
 	var req struct {
+		Type      TxType `json:"type"`
 		From      string `json:"from"`
 		To        string `json:"to"`
 		Amount    int64  `json:"amount"`
 		Fee       int64  `json:"fee"`
+		GasLimit  uint64 `json:"gas_limit"`
+		GasPrice  int64  `json:"gas_price"`
 		Data      string `json:"data"`
 		Timestamp int64  `json:"timestamp"`
 		Signature string `json:"signature"`
@@ -678,10 +696,13 @@ func (n *Node) handleAddTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx := &Transaction{
+		Type:      req.Type,
 		From:      req.From,
 		To:        req.To,
 		Amount:    req.Amount,
 		Fee:       req.Fee,
+		GasLimit:  req.GasLimit,
+		GasPrice:  req.GasPrice,
 		Data:      req.Data,
 		Timestamp: req.Timestamp,
 		Signature: req.Signature,
@@ -1274,6 +1295,355 @@ func (n *Node) handleGetAddress(w http.ResponseWriter, r *http.Request) {
 			"transaction_count":    txCount,
 			"transactions":         transactions,
 			"pending_transactions": pendingTxs,
+		},
+	})
+}
+
+// ============================================================================
+// SMART CONTRACT ENDPOINTS
+// ============================================================================
+
+func (n *Node) handleContractDeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Only POST allowed")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 100*1024)
+
+	var req struct {
+		From      string `json:"from"`
+		Amount    int64  `json:"amount"`
+		GasLimit  uint64 `json:"gas_limit"`
+		GasPrice  int64  `json:"gas_price"`
+		Data      string `json:"data"`
+		Timestamp int64  `json:"timestamp"`
+		Signature string `json:"signature"`
+		PublicKey string `json:"public_key"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	tx := &Transaction{
+		Type:      TxDeploy,
+		From:      req.From,
+		To:        "",
+		Amount:    req.Amount,
+		GasLimit:  req.GasLimit,
+		GasPrice:  req.GasPrice,
+		Data:      req.Data,
+		Timestamp: req.Timestamp,
+		Signature: req.Signature,
+		PublicKey: req.PublicKey,
+	}
+
+	if err := validateTransaction(tx); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	added, err := n.Blockchain.AddTransactionIfNew(tx)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to add transaction: %v", err))
+		return
+	}
+
+	if !added {
+		respondJSON(w, http.StatusOK, APIResponse{
+			Success: true,
+			Message: "Transaction already in mempool",
+		})
+		return
+	}
+
+	if n.PeerManager != nil {
+		n.PeerManager.BroadcastTransaction(tx)
+	}
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Deploy transaction submitted",
+		Data: map[string]interface{}{
+			"from":      tx.From,
+			"gas_limit": tx.GasLimit,
+			"gas_price": tx.GasPrice,
+			"signature": truncateString(tx.Signature, 32),
+		},
+	})
+}
+
+func (n *Node) handleContractCall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Only POST allowed")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 100*1024)
+
+	var req struct {
+		From      string `json:"from"`
+		To        string `json:"to"`
+		Amount    int64  `json:"amount"`
+		GasLimit  uint64 `json:"gas_limit"`
+		GasPrice  int64  `json:"gas_price"`
+		Data      string `json:"data"`
+		Timestamp int64  `json:"timestamp"`
+		Signature string `json:"signature"`
+		PublicKey string `json:"public_key"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	tx := &Transaction{
+		Type:      TxCall,
+		From:      req.From,
+		To:        req.To,
+		Amount:    req.Amount,
+		GasLimit:  req.GasLimit,
+		GasPrice:  req.GasPrice,
+		Data:      req.Data,
+		Timestamp: req.Timestamp,
+		Signature: req.Signature,
+		PublicKey: req.PublicKey,
+	}
+
+	if err := validateTransaction(tx); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	added, err := n.Blockchain.AddTransactionIfNew(tx)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Failed to add transaction: %v", err))
+		return
+	}
+
+	if !added {
+		respondJSON(w, http.StatusOK, APIResponse{
+			Success: true,
+			Message: "Transaction already in mempool",
+		})
+		return
+	}
+
+	if n.PeerManager != nil {
+		n.PeerManager.BroadcastTransaction(tx)
+	}
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Call transaction submitted",
+		Data: map[string]interface{}{
+			"from":      tx.From,
+			"to":        tx.To,
+			"gas_limit": tx.GasLimit,
+			"gas_price": tx.GasPrice,
+			"signature": truncateString(tx.Signature, 32),
+		},
+	})
+}
+
+func (n *Node) handleContractQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Only POST allowed")
+		return
+	}
+
+	if n.Blockchain.StateDB == nil {
+		respondError(w, http.StatusNotImplemented, "Smart contracts not initialized")
+		return
+	}
+
+	var req struct {
+		From  string `json:"from"`
+		To    string `json:"to"`
+		Data  string `json:"data"`
+		Value int64  `json:"value"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.To == "" {
+		respondError(w, http.StatusBadRequest, "Missing 'to' (contract address)")
+		return
+	}
+
+	calldata, err := hex.DecodeString(req.Data)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid hex data")
+		return
+	}
+
+	lastBlock := n.Blockchain.GetLastBlock()
+	context := &ExecutionContext{
+		Caller:          req.From,
+		ContractAddress: req.To,
+		Origin:          req.From,
+		Value:           req.Value,
+		GasPrice:        0,
+		BlockHeight:     lastBlock.Index,
+		BlockTimestamp:  lastBlock.Timestamp,
+		DifficultyBits: lastBlock.getEffectiveDifficultyBits(),
+		GasLimit:        MaxGasLimit,
+		Calldata:        calldata,
+		Depth:           0,
+	}
+
+	result := ExecuteReadOnly(n.Blockchain.StateDB, req.To, context, MaxGasLimit)
+
+	if result.Err != nil {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Execution error: %v", result.Err))
+		return
+	}
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Query executed",
+		Data: map[string]interface{}{
+			"return_data": hex.EncodeToString(result.ReturnData),
+			"gas_used":    result.GasUsed,
+			"reverted":    result.Reverted,
+		},
+	})
+}
+
+func (n *Node) handleContractCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
+		return
+	}
+
+	if n.Blockchain.StateDB == nil {
+		respondError(w, http.StatusNotImplemented, "Smart contracts not initialized")
+		return
+	}
+
+	address := r.URL.Query().Get("address")
+	if address == "" {
+		respondError(w, http.StatusBadRequest, "Missing 'address' parameter")
+		return
+	}
+
+	code := n.Blockchain.StateDB.GetCode(address)
+	if code == nil {
+		respondError(w, http.StatusNotFound, "Contract not found")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Contract code",
+		Data: map[string]interface{}{
+			"address":   address,
+			"code":      hex.EncodeToString(code),
+			"code_size": len(code),
+		},
+	})
+}
+
+func (n *Node) handleContractStorage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondError(w, http.StatusMethodNotAllowed, "Only GET allowed")
+		return
+	}
+
+	if n.Blockchain.StateDB == nil {
+		respondError(w, http.StatusNotImplemented, "Smart contracts not initialized")
+		return
+	}
+
+	address := r.URL.Query().Get("address")
+	key := r.URL.Query().Get("key")
+	if address == "" || key == "" {
+		respondError(w, http.StatusBadRequest, "Missing 'address' or 'key' parameter")
+		return
+	}
+
+	value := n.Blockchain.StateDB.GetStorage(address, key)
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Storage value",
+		Data: map[string]interface{}{
+			"address": address,
+			"key":     key,
+			"value":   hex.EncodeToString(value),
+		},
+	})
+}
+
+func (n *Node) handleContractEstimateGas(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "Only POST allowed")
+		return
+	}
+
+	if n.Blockchain.StateDB == nil {
+		respondError(w, http.StatusNotImplemented, "Smart contracts not initialized")
+		return
+	}
+
+	var req struct {
+		From  string `json:"from"`
+		To    string `json:"to"`
+		Data  string `json:"data"`
+		Value int64  `json:"value"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	calldata, err := hex.DecodeString(req.Data)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid hex data")
+		return
+	}
+
+	lastBlock := n.Blockchain.GetLastBlock()
+	context := &ExecutionContext{
+		Caller:          req.From,
+		ContractAddress: req.To,
+		Origin:          req.From,
+		Value:           req.Value,
+		GasPrice:        0,
+		BlockHeight:     lastBlock.Index,
+		BlockTimestamp:  lastBlock.Timestamp,
+		DifficultyBits: lastBlock.getEffectiveDifficultyBits(),
+		GasLimit:        MaxGasLimit,
+		Calldata:        calldata,
+		Depth:           0,
+	}
+
+	result := ExecuteReadOnly(n.Blockchain.StateDB, req.To, context, MaxGasLimit)
+
+	if result.Err != nil {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("Execution error: %v", result.Err))
+		return
+	}
+
+	// Add 20% buffer to estimate
+	estimatedGas := result.GasUsed + result.GasUsed/5
+	if estimatedGas < BaseCallGas {
+		estimatedGas = BaseCallGas
+	}
+
+	respondJSON(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Gas estimate",
+		Data: map[string]interface{}{
+			"gas_used":      result.GasUsed,
+			"gas_estimated": estimatedGas,
 		},
 	})
 }

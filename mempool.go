@@ -294,14 +294,34 @@ func (mp *Mempool) ValidateTransaction(tx *Transaction) error {
 	if tx.From == "" {
 		return fmt.Errorf("missing sender address")
 	}
-	if tx.To == "" {
+	if tx.Type == TxDeploy {
+		if tx.To != "" {
+			return fmt.Errorf("deploy transaction must have empty 'to' field")
+		}
+	} else if tx.To == "" {
 		return fmt.Errorf("missing recipient address")
 	}
-	if tx.Amount <= 0 {
+	if tx.Type == TxTransfer && tx.Amount <= 0 {
 		return fmt.Errorf("amount must be positive")
+	}
+	if (tx.Type == TxDeploy || tx.Type == TxCall) && tx.Amount < 0 {
+		return fmt.Errorf("amount must not be negative")
 	}
 	if tx.Signature == "" {
 		return fmt.Errorf("missing signature")
+	}
+
+	// Gas validation for contract transactions
+	if tx.Type == TxDeploy || tx.Type == TxCall {
+		if tx.GasLimit == 0 {
+			return fmt.Errorf("contract transaction must have gas_limit > 0")
+		}
+		if tx.GasLimit > MaxGasLimit {
+			return fmt.Errorf("gas_limit %d exceeds maximum %d", tx.GasLimit, MaxGasLimit)
+		}
+		if tx.GasPrice < MinGasPrice {
+			return fmt.Errorf("gas_price %d below minimum %d", tx.GasPrice, MinGasPrice)
+		}
 	}
 
 	// Size validation
