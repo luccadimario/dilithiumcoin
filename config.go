@@ -94,8 +94,10 @@ func DefaultNetworkConfig() *NetworkConfig {
 			"seed3.dilithiumcoin.com:1701",
 			"seed4.dilithiumcoin.com:1701",
 			"seed5.dilithiumcoin.com:1701",
-			"node1.dilithiumcoin.com:1701",
-			"node2.dilithiumcoin.com:1701",
+			"seed6.dilithiumcoin.com:1701",
+			"seed7.dilithiumcoin.com:1701",
+			"seed8.dilithiumcoin.com:1701",
+			"seed9.dilithiumcoin.com:1701",
 		},
 
 		// Connection limits

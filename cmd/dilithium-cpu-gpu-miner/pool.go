@@ -397,6 +397,8 @@ func (pw *PoolWorker) mineAndSubmitShares(ctx context.Context, work *PoolWorkMes
 	fmt.Printf("[*] Mining block #%d with %d %s...\n", block.Index, pw.threads,
 		map[bool]string{true: "GPU", false: "CPU threads"}[pw.useGPU])
 
+	var nonceOffset int64
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -406,10 +408,13 @@ func (pw *PoolWorker) mineAndSubmitShares(ctx context.Context, work *PoolWorkMes
 		default:
 		}
 
-		result, found := pw.mineWithWorkersCtx(ctx, midstate, prefixTail, suffix, work.ShareBits, work.Template.DifficultyBits)
+		result, found := pw.mineWithWorkersCtx(ctx, midstate, prefixTail, suffix, work.ShareBits, work.Template.DifficultyBits, nonceOffset)
 		if !found {
 			return
 		}
+
+		// Advance nonce past the found result so next iteration explores new hashes
+		nonceOffset = result.Nonce + 1
 
 		block.Nonce = result.Nonce
 		block.Hash = hashToHex(result.Hash)
@@ -475,7 +480,7 @@ func (pw *PoolWorker) buildHashInput(block *Block) (prefix, suffix []byte) {
 }
 
 // mineWithWorkersCtx launches CPU or GPU workers with an external context
-func (pw *PoolWorker) mineWithWorkersCtx(ctx context.Context, midstate, prefixTail, suffix []byte, shareBits, blockBits int) (MiningResult, bool) {
+func (pw *PoolWorker) mineWithWorkersCtx(ctx context.Context, midstate, prefixTail, suffix []byte, shareBits, blockBits int, nonceOffset int64) (MiningResult, bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -490,13 +495,16 @@ func (pw *PoolWorker) mineWithWorkersCtx(ctx context.Context, midstate, prefixTa
 			BatchSize: pw.batchSize,
 		}
 		go func() {
-			worker.Mine(ctx, midstate, prefixTail, suffix, 0, 1, diffBits, resultCh)
+			worker.Mine(ctx, midstate, prefixTail, suffix, nonceOffset, 1, diffBits, resultCh)
 		}()
 
 		select {
 		case result := <-resultCh:
 			pw.totalHashes.Add(worker.HashCount.Load())
 			return result, true
+		case <-ctx.Done():
+			pw.totalHashes.Add(worker.HashCount.Load())
+			return MiningResult{}, false
 		case <-pw.stopCh:
 			cancel()
 			pw.totalHashes.Add(worker.HashCount.Load())
@@ -513,7 +521,7 @@ func (pw *PoolWorker) mineWithWorkersCtx(ctx context.Context, midstate, prefixTa
 				defer workerWg.Done()
 				w.Mine(ctx, midstate, prefixTail, suffix,
 					startNonce, int64(pw.threads), diffBits, resultCh)
-			}(workers[i], int64(i))
+			}(workers[i], nonceOffset+int64(i))
 		}
 
 		select {
@@ -524,6 +532,12 @@ func (pw *PoolWorker) mineWithWorkersCtx(ctx context.Context, midstate, prefixTa
 				pw.totalHashes.Add(w.HashCount.Load())
 			}
 			return result, true
+		case <-ctx.Done():
+			workerWg.Wait()
+			for _, w := range workers {
+				pw.totalHashes.Add(w.HashCount.Load())
+			}
+			return MiningResult{}, false
 		case <-pw.stopCh:
 			cancel()
 			workerWg.Wait()

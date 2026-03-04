@@ -29,8 +29,10 @@ var hardcodedSeeds = []string{
 	"http://seed3.dilithiumcoin.com:8001",
 	"http://seed4.dilithiumcoin.com:8001",
 	"http://seed5.dilithiumcoin.com:8001",
-	"http://node1.dilithiumcoin.com:8001",
-	"http://node2.dilithiumcoin.com:8001",
+	"http://seed6.dilithiumcoin.com:8001",
+	"http://seed7.dilithiumcoin.com:8001",
+	"http://seed8.dilithiumcoin.com:8001",
+	"http://seed9.dilithiumcoin.com:8001",
 }
 
 // nodeCandidate represents a discovered node with quality metrics.
