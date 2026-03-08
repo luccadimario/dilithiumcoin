@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -78,21 +79,76 @@ type App struct {
 	wallet    *walletService
 	api       *apiService
 	mu        sync.Mutex
+	shipName  string
 }
 
 // NewApp creates a new App instance
 func NewApp() *App {
 	return &App{
-		wallet: newWalletService(defaultWalletDir),
-		api:    newAPIService("http://localhost:8001"),
+		wallet:   newWalletService(defaultWalletDir),
+		api:      newAPIService("http://localhost:8001"),
+		shipName: "USS Dilithium",
 	}
+}
+
+// SetShipName updates the player's ship name and persists it to disk.
+func (a *App) SetShipName(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if name == "" {
+		name = "USS Dilithium"
+	}
+	a.shipName = name
+	a.saveShipName(name)
+}
+
+// GetShipName returns the current ship name
+func (a *App) GetShipName() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.shipName
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	// Discover the best available node using multi-tier resolution
+	// Load persisted ship name if one was saved.
+	if name := a.loadShipName(); name != "" {
+		a.mu.Lock()
+		a.shipName = name
+		a.mu.Unlock()
+	}
+
+	// Discover the best available node using multi-tier resolution.
 	go a.resolveNode()
+}
+
+func (a *App) loadShipName() string {
+	data, err := os.ReadFile(filepath.Join(defaultWalletDir, "shipname"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (a *App) saveShipName(name string) {
+	os.MkdirAll(defaultWalletDir, 0700)
+	os.WriteFile(filepath.Join(defaultWalletDir, "shipname"), []byte(name), 0644)
+}
+
+// getGMAddress returns the Game Master address. It reads from ~/.dilithium/gm/address
+// (written by dilithium-gm on first run) so the wallet automatically targets the
+// correct address without any manual configuration.
+func getGMAddress() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".dilithium", "gm", "address"))
+	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // resolveNode discovers the best reachable node using multi-tier discovery:
@@ -211,7 +267,7 @@ func (a *App) GetBalance() BalanceInfo {
 }
 
 // SendTransaction signs and submits a transaction
-func (a *App) SendTransaction(to string, amountDLT string, feeDLT string) TxResult {
+func (a *App) SendTransaction(to string, amountDLT string, feeDLT string, data string) TxResult {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -219,7 +275,30 @@ func (a *App) SendTransaction(to string, amountDLT string, feeDLT string) TxResu
 		return TxResult{Success: false, Message: "wallet is locked"}
 	}
 
-	return a.api.sendTransaction(a.wallet, to, amountDLT, feeDLT)
+	return a.api.sendTransaction(a.wallet, to, amountDLT, feeDLT, data)
+}
+
+// ExecuteGameAction performs a Star Trek themed game action via a transaction
+func (a *App) ExecuteGameAction(action string, target string) TxResult {
+	a.mu.Lock()
+	ship := a.shipName
+	unlocked := a.wallet.isUnlocked()
+	a.mu.Unlock()
+
+	if !unlocked {
+		return TxResult{Success: false, Message: "Your station is locked, Captain. Please unlock your wallet."}
+	}
+
+	// Resolve GM address: prefer the address file written by dilithium-gm.
+	gmAddress := getGMAddress()
+	if gmAddress == "" {
+		return TxResult{Success: false, Message: "Game Master not found. Run dilithium-gm first."}
+	}
+
+	// Create the command string: ST:[SHIP]:[ACTION]:[TARGET]
+	gameData := fmt.Sprintf("ST:%s:%s:%s", ship, action, target)
+	
+	return a.api.sendTransaction(a.wallet, gmAddress, "0.001", "0.0001", gameData)
 }
 
 // GetTransactionHistory gets transaction history from the node
